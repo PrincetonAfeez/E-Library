@@ -26,9 +26,16 @@ against a production-sized dataset + managed DB to size horizontally.
 
 ## Run
 ```bash
-# Ramp to 50 virtual users against a staging instance:
-BASE_URL=https://staging.example.test k6 run scripts/load/search_smoke.js
+# Ramp to 50 virtual users against a staging instance (search -> click session):
+BASE_URL=https://staging.example.test ORG=metro-library k6 run scripts/load/search_smoke.js
 ```
+The script tags metrics per endpoint (`search_duration`, `detail_duration`) and
+asserts p95 < 400 ms with < 0.1% failures.
+
+> **Throttling:** the API rate-limits anonymous callers (`THROTTLE_ANON`, default
+> 120/min). For a real load test, raise it on the staging instance for the load
+> source — e.g. `THROTTLE_ANON=100000/minute` — otherwise you measure the rate
+> limiter, not the app. Rates are env-configurable (`elibrary/settings.py`).
 
 ## Pass criteria (align with docs/policies/slos.md)
 - p95 `/api/v1/catalog/search` < 400 ms at target concurrency.
