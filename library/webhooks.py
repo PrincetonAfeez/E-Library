@@ -62,9 +62,16 @@ def _sign(secret: str, body: bytes) -> str:
 
 
 def _default_post(url: str, body: bytes, headers: dict) -> int:
+    from urllib.parse import urlparse
+
+    from . import circuit
+
     request = urllib.request.Request(url, data=body, headers=headers, method="POST")
-    with urllib.request.urlopen(request, timeout=8) as response:  # noqa: S310 - tenant-configured URL
-        return response.status
+    # Trip a per-host breaker so a persistently failing endpoint is skipped fast
+    # instead of retried on every sweep (CircuitOpen is handled like any failure).
+    with circuit.guard(urlparse(url).netloc):
+        with urllib.request.urlopen(request, timeout=8) as response:  # noqa: S310 - tenant URL
+            return response.status
 
 
 def deliver_webhooks(*, batch_size: int = 100, post=None, now=None) -> int:

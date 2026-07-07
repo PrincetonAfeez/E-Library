@@ -22,8 +22,13 @@ OPENLIBRARY_URL = "https://openlibrary.org/api/books?bibkeys=ISBN:{isbn}&format=
 
 
 def _default_fetch(url: str) -> bytes:
-    with urllib.request.urlopen(url, timeout=8) as response:  # noqa: S310 - fixed https host
-        return response.read()
+    from urllib.parse import urlparse
+
+    from . import circuit
+
+    with circuit.guard(urlparse(url).netloc):
+        with urllib.request.urlopen(url, timeout=8) as response:  # noqa: S310 - fixed https host
+            return response.read()
 
 
 def fetch_isbn_metadata(isbn: str, *, fetch=None) -> dict | None:

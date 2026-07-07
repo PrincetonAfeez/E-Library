@@ -623,6 +623,14 @@ class AuditLog(TimeStampedModel):
         ordering = ["-created_at"]
         indexes = [models.Index(fields=["action", "created_at"], name="audit_action_time")]
 
+    def save(self, *args, **kwargs):
+        # Append-only: audit rows are written once and never edited. Deletion is
+        # allowed only via the retention job (prune_logs). A DB trigger enforces
+        # the no-UPDATE rule at the database level as well (migration 0026).
+        if not self._state.adding:
+            raise ValueError("AuditLog is append-only and cannot be modified.")
+        super().save(*args, **kwargs)
+
 
 class OutboxStatus(models.TextChoices):
     PENDING = "pending", "Pending"
@@ -1723,6 +1731,37 @@ class StaffTotpDevice(TimeStampedModel):
 class InventoryStatus(models.TextChoices):
     OPEN = "open", "Open"
     CLOSED = "closed", "Closed"
+
+
+class FeatureFlag(TimeStampedModel):
+    """A safe-rollout switch. A row with a null organization is the global
+    default; a row scoped to an organization overrides it for that tenant."""
+
+    key = models.CharField(max_length=100)
+    organization = models.ForeignKey(
+        Organization, on_delete=models.CASCADE, null=True, blank=True, related_name="feature_flags"
+    )
+    enabled = models.BooleanField(default=False)
+    description = models.CharField(max_length=200, blank=True)
+
+    class Meta:
+        ordering = ["key", "organization__name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["key"],
+                condition=Q(organization__isnull=True),
+                name="uniq_global_feature_flag",
+            ),
+            models.UniqueConstraint(
+                fields=["key", "organization"],
+                condition=Q(organization__isnull=False),
+                name="uniq_org_feature_flag",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        scope = self.organization.slug if self.organization_id else "global"
+        return f"{self.key}={self.enabled} ({scope})"
 
 
 class InventorySession(TimeStampedModel):

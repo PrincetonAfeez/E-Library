@@ -170,6 +170,10 @@ RATELIMIT_TRUSTED_PROXY_COUNT = env.int("RATELIMIT_TRUSTED_PROXY_COUNT", default
 # PostgreSQL full-text search configuration (language dictionary).
 SEARCH_CONFIG = env("SEARCH_CONFIG", default="english")
 
+# Static default feature flags. DB-backed FeatureFlag rows (global or per-org)
+# override these at runtime; see library/flags.py.
+FEATURE_FLAGS: dict = {}
+
 # Billing (Stripe). Left blank -> the manual no-op gateway is used, so the app
 # runs fully without a payment provider in dev/test.
 STRIPE_SECRET_KEY = env("STRIPE_SECRET_KEY", default="")
