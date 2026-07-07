@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %}Reports{% endblock %}
+{% block content %}
+  <section class="page-stack">
+    <div class="result-header">
+      <h1>Reports — last {{ days }} days</h1>
+      <a class="button secondary" href="{% url 'librarian_dashboard' %}">Dashboard</a>
+    </div>
+
+    <form method="get" class="action-row">
+      <label>Window (days) <input type="number" name="days" value="{{ days }}" min="1" max="730"></label>
+      <button>Update</button>
+    </form>
+
+    <div class="ops-grid">
+      <section>
+        <h2>Circulation</h2>
+        <table>
+          <tbody>
+            <tr><td>Borrowed</td><td>{{ report.circulation.borrowed }}</td></tr>
+            <tr><td>Returned</td><td>{{ report.circulation.returned }}</td></tr>
+            <tr><td>Renewals</td><td>{{ report.circulation.renewals }}</td></tr>
+            <tr><td>Active now</td><td>{{ report.circulation.active_now }}</td></tr>
+            <tr><td>Overdue now</td><td>{{ report.circulation.overdue_now }}</td></tr>
+            <tr><td>Unique borrowers</td><td>{{ report.circulation.unique_borrowers }}</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>Collection</h2>
+        <table>
+          <tbody>
+            <tr><td>Copies</td><td>{{ report.collection.total_copies }}</td></tr>
+            <tr><td>Works</td><td>{{ report.collection.total_works }}</td></tr>
+            <tr><td>Editions</td><td>{{ report.collection.total_editions }}</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>Overdue aging</h2>
+        <table>
+          <tbody>
+            {% for bucket, count in report.overdue_aging.items %}
+              <tr><td>{{ bucket }} days</td><td>{{ count }}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>Holds</h2>
+        <table>
+          <tbody>
+            <tr><td>Waiting now</td><td>{{ report.holds.waiting_now }}</td></tr>
+            <tr><td>Ready now</td><td>{{ report.holds.ready_now }}</td></tr>
+            <tr><td>Placed</td><td>{{ report.holds.placed }}</td></tr>
+            <tr><td>Fulfilled</td><td>{{ report.holds.fulfilled }}</td></tr>
+            <tr><td>Fill rate</td><td>{{ report.holds.fill_rate|default:"—" }}</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>Fines (&cent;)</h2>
+        <table>
+          <tbody>
+            <tr><td>Assessed</td><td>{{ report.fines.assessed_cents }}</td></tr>
+            <tr><td>Collected</td><td>{{ report.fines.collected_cents }}</td></tr>
+            <tr><td>Outstanding</td><td>{{ report.fines.outstanding_cents }}</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>Search</h2>
+        <table>
+          <tbody>
+            <tr><td>Queries</td><td>{{ report.search.volume }}</td></tr>
+            <tr><td>Zero-result</td><td>{{ report.search.zero_result }}</td></tr>
+            <tr><td>Avg latency (ms)</td><td>{{ report.search.avg_latency_ms }}</td></tr>
+          </tbody>
+        </table>
+      </section>
+    </div>
+
+    <section>
+      <h2>Most borrowed</h2>
+      <table>
+        <thead><tr><th>Title</th><th>Loans</th></tr></thead>
+        <tbody>
+          {% for row in report.popular %}
+            <tr><td>{{ row.title }}</td><td>{{ row.loans }}</td></tr>
+          {% empty %}
+            <tr><td colspan="2">No circulation in this window.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Activity by branch</h2>
+      <table>
+        <thead><tr><th>Branch</th><th>Loans</th></tr></thead>
+        <tbody>
+          {% for row in report.branches %}
+            <tr><td>{{ row.branch }}</td><td>{{ row.loans }}</td></tr>
+          {% empty %}
+            <tr><td colspan="2">No activity.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  </section>
+{% endblock %}

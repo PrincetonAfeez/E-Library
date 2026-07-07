@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Service status{% endblock %}
+{% block content %}
+  <section class="page-stack narrow">
+    <h1>Service status</h1>
+    <p class="status-banner {% if all_ok %}ok{% else %}down{% endif %}" role="status">
+      {% if all_ok %}All systems operational{% else %}Some systems are degraded{% endif %}
+    </p>
+    <table>
+      <thead><tr><th>Component</th><th>Status</th></tr></thead>
+      <tbody>
+        {% for c in components %}
+          <tr>
+            <td>{{ c.name }}</td>
+            <td>{% if c.ok %}<span class="pill">Operational</span>{% else %}<span class="pill danger">Down</span>{% endif %}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

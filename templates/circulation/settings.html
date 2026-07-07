@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Account settings{% endblock %}
+{% block content %}
+  <section class="login-panel">
+    <h1>Account settings</h1>
+    <form method="post">
+      {% csrf_token %}
+      {{ form.as_p }}
+      <button>Save</button>
+    </form>
+    <p><a href="{% url 'account' %}">Back to account</a></p>
+
+    <hr>
+    <h2>Your data &amp; privacy</h2>
+    <p><a class="button secondary" href="{% url 'export_my_data' %}">Download my data</a></p>
+    <form method="post" action="{% url 'erase_my_account' %}" class="danger-form">
+      {% csrf_token %}
+      <p>Permanently erase your account and personal data. This cannot be undone.</p>
+      <label>Type <strong>yes</strong> to confirm: <input type="text" name="confirm"></label>
+      <button class="danger">Erase my account</button>
+    </form>
+  </section>
+{% endblock %}

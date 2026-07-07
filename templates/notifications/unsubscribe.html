@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Email preferences{% endblock %}
+{% block content %}
+  <section class="page-stack narrow">
+    <h1>Email preferences</h1>
+    {% if unsubscribed %}
+      <p>You're unsubscribed from non-essential emails (courtesy reminders and news).</p>
+      <p class="hint">
+        You'll still receive essential notices required to use the library — hold
+        pickups and overdue notices — because those are part of your account activity.
+      </p>
+      <form method="post" class="action-row">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="resubscribe">
+        <button>Re-subscribe</button>
+      </form>
+    {% else %}
+      <p>You're currently subscribed to courtesy notices such as due-soon reminders.</p>
+      <p>Click below to unsubscribe from non-essential emails.</p>
+      <form method="post" class="action-row">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="unsubscribe">
+        <button>Unsubscribe</button>
+      </form>
+    {% endif %}
+  </section>
+{% endblock %}

@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Catalog imports{% endblock %}
+{% block content %}
+  <section class="page-stack">
+    <div class="result-header">
+      <h1>Catalog imports</h1>
+      <a class="button secondary" href="{% url 'librarian_dashboard' %}">Back to dashboard</a>
+    </div>
+
+    <section>
+      <h2>Upload CSV</h2>
+      <form method="post" enctype="multipart/form-data" class="import-form">
+        {% csrf_token %}
+        {{ form.as_p }}
+        <button type="submit">Stage &amp; validate</button>
+      </form>
+    </section>
+
+    <section>
+      <h2>Recent batches</h2>
+      <table>
+        <thead>
+          <tr><th>#</th><th>Uploaded</th><th>Status</th><th>Rows</th><th>Errors</th><th></th></tr>
+        </thead>
+        <tbody>
+          {% for batch in batches %}
+            <tr>
+              <td>{{ batch.pk }}</td>
+              <td>{{ batch.created_at|date:"M j, Y H:i" }}</td>
+              <td><span class="pill">{{ batch.get_status_display }}</span></td>
+              <td>{{ batch.row_count }}</td>
+              <td>{{ batch.error_count }}</td>
+              <td><a href="{% url 'librarian_import_detail' batch.pk %}">View</a></td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="6">No imports yet.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  </section>
+{% endblock %}

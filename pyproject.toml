@@ -1,0 +1,53 @@
+[project]
+name = "e-library"
+version = "0.1.0"
+description = "Django + HTMX enterprise e-library capstone"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "Django>=5.2,<7.0",
+    "djangorestframework>=3.15",
+    "drf-spectacular>=0.27",
+    "django-environ>=0.11",
+    "psycopg[binary]>=3.2",
+    "redis>=5.0",
+    "whitenoise>=6.7",
+    "gunicorn>=22.0",
+    "django-cors-headers>=4.4",
+    "django-csp>=4.0",
+    "sentry-sdk>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "black>=24.0",
+    "factory-boy>=3.3",
+    "mypy>=1.10",
+    "pytest>=8.0",
+    "pytest-django>=4.8",
+    "ruff>=0.5",
+]
+
+[build-system]
+requires = ["setuptools>=70", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["elibrary*", "library*"]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "elibrary.settings"
+python_files = ["tests.py", "test_*.py", "*_tests.py"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "DJ"]
+ignore = ["E501", "DJ001", "DJ008", "DJ012"]
+
+[tool.black]
+line-length = 100
+target-version = ["py312"]

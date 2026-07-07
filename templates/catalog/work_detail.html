@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}{{ work.canonical_title }}{% endblock %}
+{% block content %}
+  <article class="detail-layout">
+    <div class="detail-cover cover">
+      {% with edition=work.editions.all.0 %}
+        {% if edition.cover_image %}
+          <img src="{{ edition.cover_image }}" alt="">
+        {% else %}
+          <span>{{ work.canonical_title|slice:":1" }}</span>
+        {% endif %}
+      {% endwith %}
+    </div>
+    <section class="detail-main">
+      <h1>{{ work.canonical_title }}</h1>
+      {% if work.subtitle %}<p class="subtitle">{{ work.subtitle }}</p>{% endif %}
+      <p class="byline">
+        {% for author in work.authors.all %}
+          {{ author.name }}{% if not forloop.last %}, {% endif %}
+        {% endfor %}
+      </p>
+      <p>{{ work.summary }}</p>
+      {% if user.is_authenticated and user.patron_profile %}
+        <form method="post" action="{% url 'borrow_work' work.slug %}" class="action-row">
+          {% csrf_token %}
+          <select name="branch">
+            <option value="">Home branch</option>
+            {% for edition in work.editions.all %}
+              {% for copy in edition.copies.all %}
+                <option value="{{ copy.branch.slug }}">{{ copy.branch.name }}</option>
+              {% endfor %}
+            {% endfor %}
+          </select>
+          <button>Borrow</button>
+        </form>
+        <form method="post" action="{% url 'place_hold' work.slug %}" class="action-row">
+          {% csrf_token %}
+          <select name="branch">
+            <option value="">Home branch</option>
+            {% for edition in work.editions.all %}
+              {% for copy in edition.copies.all %}
+                <option value="{{ copy.branch.slug }}">{{ copy.branch.name }}</option>
+              {% endfor %}
+            {% endfor %}
+          </select>
+          <button class="secondary">Place hold</button>
+        </form>
+      {% endif %}
+
+      <section class="reviews">
+        <h2>Reviews
+          {% if rating.average %}<span class="rating">★ {{ rating.average }} ({{ rating.count }})</span>{% endif %}
+        </h2>
+        {% if user.is_authenticated and user.patron_profile %}
+          <form method="post" action="{% url 'submit_review' work.slug %}" class="review-form">
+            {% csrf_token %}
+            <label>Rating
+              <select name="rating">
+                <option value="5">5</option><option value="4">4</option>
+                <option value="3">3</option><option value="2">2</option><option value="1">1</option>
+              </select>
+            </label>
+            <textarea name="body" rows="2" placeholder="Optional review"></textarea>
+            <button>Post review</button>
+          </form>
+        {% endif %}
+        <ul class="review-list">
+          {% for review in reviews %}
+            <li><strong>★ {{ review.rating }}</strong> — {{ review.body }}</li>
+          {% empty %}
+            <li>No reviews yet.</li>
+          {% endfor %}
+        </ul>
+      </section>
+
+      {% if recommendations %}
+        <section class="recommendations">
+          <h2>Readers also borrowed</h2>
+          <ul>
+            {% for rec in recommendations %}
+              <li><a href="{% url 'work_detail' rec.slug %}">{{ rec.title }}</a></li>
+            {% endfor %}
+          </ul>
+        </section>
+      {% endif %}
+
+      <h2>Copies</h2>
+      <table>
+        <thead><tr><th>Barcode</th><th>Branch</th><th>Shelf</th><th>Status</th><th>Format</th></tr></thead>
+        <tbody>
+          {% for edition in work.editions.all %}
+            {% for copy in edition.copies.all %}
+              <tr>
+                <td>{{ copy.barcode }}</td>
+                <td>{{ copy.branch.name }}</td>
+                <td>{{ copy.shelf_location.public_label|default:"-" }}</td>
+                <td><span class="pill">{{ copy.get_status_display }}</span></td>
+                <td>{{ edition.get_format_display }}</td>
+              </tr>
+            {% endfor %}
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  </article>
+{% endblock %}
+

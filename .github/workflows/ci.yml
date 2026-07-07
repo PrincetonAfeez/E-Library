@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: elibrary_ci
+          POSTGRES_USER: elibrary
+          POSTGRES_PASSWORD: elibrary
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U elibrary -d elibrary_ci"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgres://elibrary:elibrary@localhost:5432/elibrary_ci
+      CACHE_URL: redis://localhost:6379/0
+      SECRET_KEY: ci-insecure-key
+      DEBUG: "False"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Lint (ruff)
+        run: ruff check .
+      - name: Migration drift check
+        run: python manage.py makemigrations --check --dry-run
+      - name: System check
+        run: python manage.py check
+      - name: Tests
+        run: pytest -q

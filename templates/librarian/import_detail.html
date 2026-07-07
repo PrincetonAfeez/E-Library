@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Import #{{ batch.pk }}{% endblock %}
+{% block content %}
+  <section class="page-stack">
+    <div class="result-header">
+      <h1>Import batch #{{ batch.pk }}</h1>
+      <a class="button secondary" href="{% url 'librarian_imports' %}">All imports</a>
+    </div>
+
+    <section class="import-summary">
+      <p>
+        Status: <span class="pill">{{ batch.get_status_display }}</span>
+        &middot; Rows: {{ batch.row_count }}
+        &middot; Errors: {{ batch.error_count }}
+        {% if batch.committed_at %}&middot; Committed {{ batch.committed_at|date:"M j, Y H:i" }}{% endif %}
+        {% if batch.rolled_back_at %}&middot; Rolled back {{ batch.rolled_back_at|date:"M j, Y H:i" }}{% endif %}
+      </p>
+
+      <div class="action-row">
+        {% if batch.status == "validated" and batch.error_count == 0 %}
+          <form method="post" action="{% url 'librarian_import_commit' batch.pk %}">
+            {% csrf_token %}
+            <button type="submit">Commit {{ batch.validation_summary.valid_rows }} rows</button>
+          </form>
+        {% endif %}
+        {% if batch.status == "validated" or batch.status == "staged" or batch.status == "committed" %}
+          <form method="post" action="{% url 'librarian_import_rollback' batch.pk %}">
+            {% csrf_token %}
+            <input type="text" name="reason" placeholder="Reason (optional)">
+            <button class="secondary" type="submit">
+              {% if batch.status == "committed" %}Reverse commit{% else %}Cancel batch{% endif %}
+            </button>
+          </form>
+        {% endif %}
+      </div>
+    </section>
+
+    <section>
+      <h2>Rows</h2>
+      <table>
+        <thead>
+          <tr><th>#</th><th>Title</th><th>Validation</th><th>Matches</th><th>Result</th></tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+            <tr>
+              <td>{{ row.row_number }}</td>
+              <td>{{ row.parsed_fields.title|default:row.row_payload.title|default:"-" }}</td>
+              <td>
+                {% if row.validation_errors %}
+                  <ul class="error-list">
+                    {% for err in row.validation_errors %}<li>{{ err }}</li>{% endfor %}
+                  </ul>
+                {% else %}
+                  <span class="pill ok">OK</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if row.matched_existing %}
+                  {% for key, value in row.matched_existing.items %}{{ key }}={{ value }} {% endfor %}
+                {% else %}—{% endif %}
+              </td>
+              <td>
+                {% if row.commit_result %}
+                  {% if row.commit_result.work.created %}work+{% else %}work={{ row.commit_result.work.id }}{% endif %}
+                  {% if row.commit_result.copy %}{% if row.commit_result.copy.created %} copy+{% else %} copy={{ row.commit_result.copy.id }}{% endif %}{% endif %}
+                {% else %}—{% endif %}
+              </td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="5">No rows.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  </section>
+{% endblock %}

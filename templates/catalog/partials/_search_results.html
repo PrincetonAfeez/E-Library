@@ -1,0 +1,29 @@
+<section class="result-header">
+  <h1>Catalog</h1>
+  <span>{{ page.result_count_label }} results</span>
+</section>
+{% if page.did_you_mean %}
+  <p class="did-you-mean" role="status">
+    Did you mean
+    <a href="?q={{ page.did_you_mean|urlencode }}">{{ page.did_you_mean }}</a>?
+  </p>
+{% endif %}
+<section class="work-grid">
+  {% for work in page.results %}
+    {% include "catalog/partials/_work_card.html" with work=work %}
+  {% empty %}
+    <div class="empty-state">
+      <h2>No matches</h2>
+      <p>Try a different title, author, subject, or ISBN.</p>
+    </div>
+  {% endfor %}
+</section>
+{% if page.has_next %}
+  <div class="load-more">
+    <a class="button secondary"
+       hx-get="{% url 'catalog_search' %}?q={{ query|urlencode }}{% for key, value in filters.items %}&{{ key }}={{ value|urlencode }}{% endfor %}&cursor={{ page.next_cursor|urlencode }}"
+       hx-target="#catalog-results"
+       hx-swap="beforeend">Load more</a>
+  </div>
+{% endif %}
+

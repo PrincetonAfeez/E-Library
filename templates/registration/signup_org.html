@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Start your library{% endblock %}
+{% block content %}
+  <section class="login-panel">
+    <h1>Start your library on E-Library</h1>
+    <p class="muted">Create your organization and owner account. Your trial starts immediately.</p>
+    <form method="post">
+      {% csrf_token %}
+      {{ form.as_p }}
+      <p class="muted">By creating a library you agree to our
+        <a href="{% url 'terms' %}">Terms</a> and
+        <a href="{% url 'privacy' %}">Privacy Policy</a>.</p>
+      <button>Create library</button>
+    </form>
+    <p>Already have an account? <a href="{% url 'login' %}">Sign in</a>.</p>
+  </section>
+{% endblock %}

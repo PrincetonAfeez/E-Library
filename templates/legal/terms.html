@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Terms of Service{% endblock %}
+{% block content %}
+  <section class="page-stack narrow prose">
+    <h1>Terms of Service</h1>
+    <p><em>Template terms — replace with counsel-reviewed language before commercial launch.</em></p>
+    <h2>1. Acceptance</h2>
+    <p>By creating an account or using the service you agree to these terms.</p>
+    <h2>2. Accounts</h2>
+    <p>You are responsible for activity under your account and for keeping your
+       credentials secure. Staff accounts may be required to use two-factor
+       authentication.</p>
+    <h2>3. Acceptable use</h2>
+    <p>Do not misuse the service, attempt to breach tenant isolation, or access
+       data belonging to another organization.</p>
+    <h2>4. Data</h2>
+    <p>Handling of personal data is described in our
+       <a href="{% url 'privacy' %}">Privacy Policy</a>. You may export or delete
+       your account data at any time.</p>
+    <h2>5. Availability</h2>
+    <p>The service is provided on a best-effort basis; service-level commitments,
+       if any, are set out in your subscription agreement.</p>
+  </section>
+{% endblock %}

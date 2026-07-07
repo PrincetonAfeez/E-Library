@@ -1,0 +1,29 @@
+<aside class="facet-panel">
+  <label>
+    Branch
+    <select name="branch">
+      <option value="">All branches</option>
+      {% for branch in page.facets.branches %}
+        <option value="{{ branch.slug }}" {% if filters.branch == branch.slug %}selected{% endif %}>{{ branch.name }} ({{ branch.count }})</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>
+    Subject
+    <select name="subject">
+      <option value="">All subjects</option>
+      {% for subject in page.facets.subjects %}
+        <option value="{{ subject.slug }}" {% if filters.subject == subject.slug %}selected{% endif %}>{{ subject.name }} ({{ subject.count }})</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>
+    Availability
+    <select name="availability">
+      <option value="">Any status</option>
+      <option value="available" {% if filters.availability == "available" %}selected{% endif %}>Available now</option>
+      <option value="held" {% if filters.availability == "held" %}selected{% endif %}>On hold</option>
+    </select>
+  </label>
+</aside>
+

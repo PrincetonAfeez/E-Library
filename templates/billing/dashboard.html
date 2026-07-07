@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block title %}Billing{% endblock %}
+{% block content %}
+  <section class="page-stack">
+    <div class="result-header">
+      <h1>Billing &amp; plan</h1>
+      <a class="button secondary" href="{% url 'librarian_dashboard' %}">Dashboard</a>
+    </div>
+
+    <section>
+      <h2>Current plan</h2>
+      {% with sub=overview.subscription %}
+        {% if sub %}
+          <p>
+            <strong>{{ sub.plan.name }}</strong> — {{ sub.get_status_display }}
+            {% if sub.trial_ends_at %}· trial ends {{ sub.trial_ends_at|date:"M j, Y" }}{% endif %}
+            {% if sub.current_period_end %}· renews {{ sub.current_period_end|date:"M j, Y" }}{% endif %}
+          </p>
+          {% if sub.status == "past_due" %}
+            <p class="message error" role="alert">
+              Payment failed ({{ sub.dunning_attempts }} attempt{{ sub.dunning_attempts|pluralize }}).
+              {% if sub.grace_until %}Service continues until {{ sub.grace_until|date:"M j, Y" }}.{% endif %}
+              Please add a working card below.
+            </p>
+          {% endif %}
+        {% else %}
+          <p>No active subscription.</p>
+        {% endif %}
+      {% endwith %}
+    </section>
+
+    <section>
+      <h2>Usage</h2>
+      <table>
+        <thead><tr><th>Resource</th><th>Used</th><th>Limit</th></tr></thead>
+        <tbody>
+          <tr><td>Branches</td><td>{{ overview.usage.branches }}</td><td>{{ overview.limits.branches|default:"∞" }}</td></tr>
+          <tr><td>Patrons</td><td>{{ overview.usage.patrons }}</td><td>{{ overview.limits.patrons|default:"∞" }}</td></tr>
+          <tr><td>Copies</td><td>{{ overview.usage.copies }}</td><td>{{ overview.limits.copies|default:"∞" }}</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Change plan</h2>
+      <form method="post" class="action-row">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="change_plan">
+        <select name="plan">
+          {% for plan in plans %}
+            <option value="{{ plan.slug }}">{{ plan.name }} — {{ plan.price_cents }}&cent;/{{ plan.billing_interval }}</option>
+          {% endfor %}
+        </select>
+        <button>Switch plan</button>
+      </form>
+      {% if overview.subscription %}
+        <form method="post" class="action-row">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="cancel">
+          <button class="secondary">Cancel subscription</button>
+        </form>
+      {% endif %}
+    </section>
+
+    <section>
+      <h2>Payment methods</h2>
+      <table>
+        <thead><tr><th>Card</th><th>Expires</th><th>Default</th></tr></thead>
+        <tbody>
+          {% for pm in overview.payment_methods %}
+            <tr>
+              <td>{{ pm.brand|title }} ····{{ pm.last4 }}</td>
+              <td>{{ pm.exp_month }}/{{ pm.exp_year }}</td>
+              <td>{% if pm.is_default %}<span class="pill">Default</span>{% endif %}</td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="3">No card on file. Add one to enable automatic renewal.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <form method="post" class="action-row">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="add_card">
+        <label class="visually-hidden" for="card-brand">Card brand</label>
+        <select id="card-brand" name="brand">
+          <option value="visa">Visa</option>
+          <option value="mastercard">Mastercard</option>
+          <option value="amex">Amex</option>
+        </select>
+        <label class="visually-hidden" for="card-last4">Card last 4 digits</label>
+        <input id="card-last4" name="last4" inputmode="numeric" maxlength="4" placeholder="4242" value="4242">
+        <label class="visually-hidden" for="card-exp-month">Expiry month</label>
+        <input id="card-exp-month" name="exp_month" inputmode="numeric" maxlength="2" placeholder="MM" value="12">
+        <label class="visually-hidden" for="card-exp-year">Expiry year</label>
+        <input id="card-exp-year" name="exp_year" inputmode="numeric" maxlength="4" placeholder="YYYY" value="2030">
+        <button>Save card</button>
+      </form>
+      <p class="hint">Simulated gateway — a card ending <code>0000</code> always declines (for testing dunning).</p>
+    </section>
+
+    <section>
+      <h2>Invoices</h2>
+      <table>
+        <thead><tr><th>Date</th><th>Amount (&cent;)</th><th>Status</th></tr></thead>
+        <tbody>
+          {% for inv in overview.invoices %}
+            <tr>
+              <td>{{ inv.created_at|date:"M j, Y" }}</td>
+              <td>{{ inv.amount_cents }}</td>
+              <td><span class="pill">{{ inv.get_status_display }}</span></td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="3">No invoices yet.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  </section>
+{% endblock %}
