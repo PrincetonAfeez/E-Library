@@ -46,4 +46,8 @@ python manage.py check
 ## Drill log
 | Date | Dump timestamp | Restore duration | Result |
 |------|----------------|------------------|--------|
-| _pending first drill_ | | | |
+| 2026-07-06 | 20260707T004618Z | 4s (empty schema + marker) | PASS — `scripts/backup.sh` → drop DB → `scripts/restore.sh`; marker row verified present after restore |
+
+> Note: the first drill used a freshly migrated schema with a marker row to prove
+> the backup/restore *path* end-to-end. Re-run monthly against a production-sized
+> snapshot to validate the RTO target under realistic data volume.

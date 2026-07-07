@@ -55,7 +55,21 @@ admin.site.register(models.NotificationTemplate)
 admin.site.register(models.NotificationDelivery)
 admin.site.register(models.SearchQueryLog)
 admin.site.register(models.DomainEvent)
-admin.site.register(models.AuditLog)
+@admin.register(models.AuditLog)
+class AuditLogAdmin(admin.ModelAdmin):
+    """Audit logs are append-only: viewable in the admin, never editable."""
+
+    list_display = ("created_at", "action", "entity_type", "entity_id", "actor", "source")
+    search_fields = ("action", "entity_type", "entity_id")
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 admin.site.register(models.OutboxEvent)
 admin.site.register(models.CatalogImportBatch)
 admin.site.register(models.CatalogImportRow)
@@ -95,5 +109,6 @@ admin.site.register(models.ConsortiumMembership)
 admin.site.register(models.IllRequest)
 admin.site.register(models.PaymentPlan)
 admin.site.register(models.PaymentAllocation)
+admin.site.register(models.FeatureFlag)
 admin.site.register(models.StaffTotpDevice)
 admin.site.register(models.InventorySession)

@@ -1,0 +1,16 @@
+#!/usr/bin/env sh
+# Fast pre-push gate: lint + migration drift + system check.
+# (Full test suite runs in CI — see .github/workflows/ci.yml.)
+# Enable once per clone:  git config core.hooksPath .githooks
+set -e
+
+echo "[pre-push] ruff"
+ruff check .
+
+echo "[pre-push] migration drift"
+python manage.py makemigrations --check --dry-run
+
+echo "[pre-push] system check"
+python manage.py check
+
+echo "[pre-push] OK (full tests run in CI)"
