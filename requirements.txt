@@ -1,0 +1,26 @@
+# Pinned runtime lockfile (production). Generated from the resolved environment.
+# App metadata/ranges live in pyproject.toml; this file pins exact versions for
+# reproducible deploys. Regenerate after dependency changes.
+#
+# Install: pip install -r requirements.txt
+Django==6.0.6
+djangorestframework==3.17.1
+drf-spectacular==0.29.0
+django-environ==0.14.0
+psycopg==3.3.4
+psycopg-binary==3.3.4
+redis==8.0.1
+whitenoise==6.12.0
+gunicorn==26.0.0
+django-cors-headers==4.9.0
+django-csp==4.0
+# Optional error monitoring (activated only when SENTRY_DSN is set):
+sentry-sdk>=2.0
+
+# Transitive pins (resolved) for reproducibility:
+asgiref==3.11.1
+sqlparse==0.5.5
+uritemplate==4.2.0
+PyYAML==6.0.3
+inflection==0.5.1
+jsonschema==4.26.0

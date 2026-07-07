@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Privacy Policy{% endblock %}
+{% block content %}
+  <section class="page-stack narrow prose">
+    <h1>Privacy Policy</h1>
+    <p><em>Template policy — replace with counsel-reviewed language before commercial launch.</em></p>
+    <h2>What we collect</h2>
+    <p>Account details (name, email, library card number), circulation activity
+       (loans, holds, fees), and technical logs needed to operate the service.</p>
+    <h2>How we use it</h2>
+    <p>To provide library services, send transactional notices you can opt out of
+       where non-essential, and secure the service. We do not sell personal data.</p>
+    <h2>Subprocessors</h2>
+    <p>Third parties that may process data on our behalf are listed in
+       <code>docs/policies/subprocessors.md</code> (e.g. payment, email, SMS,
+       and error-monitoring providers). Optional AI features run locally and do
+       not transmit catalog or patron data to an external model provider.</p>
+    <h2>Retention &amp; your rights</h2>
+    <p>Returned-loan history is anonymized by default. You can export your data
+       (<a href="{% url 'export_my_data' %}">Export my data</a>) and request
+       deletion. Retention windows are described in our data-retention policy.</p>
+    <h2>Security</h2>
+    <p>Data is transmitted over TLS, passwords are stored using a modern key
+       derivation function, and second-factor secrets are encrypted at rest.</p>
+  </section>
+{% endblock %}

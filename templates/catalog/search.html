@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Catalog{% endblock %}
+{% block content %}
+  <section class="catalog-shell">
+    <form class="search-panel"
+      hx-get="{% url 'catalog_search' %}"
+      hx-target="#catalog-results"
+      hx-push-url="true"
+      hx-trigger="keyup changed delay:300ms from:input, change from:select">
+      <div class="search-row">
+        <input type="search" name="q" value="{{ query }}" placeholder="Search title, author, subject, or ISBN" autocomplete="off" autofocus>
+        <button type="submit" aria-label="Search">Search</button>
+      </div>
+      {% include "catalog/partials/_facet_panel.html" %}
+    </form>
+    <div id="catalog-results">
+      {% include "catalog/partials/_search_results.html" %}
+    </div>
+  </section>
+{% endblock %}
+

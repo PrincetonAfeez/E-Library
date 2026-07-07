@@ -1,0 +1,116 @@
+# Runtime services run in a hardened (non-debug) configuration. DEBUG and the
+# secret key come from `environment:` (which overrides the dev-oriented
+# .env.example), and SSL redirect is disabled so the demo stays reachable over
+# plain HTTP on localhost. Provide a real SECRET_KEY via the shell environment
+# for any non-demo deployment.
+x-runtime-env: &runtime-env
+  DEBUG: "False"
+  SECURE_SSL_REDIRECT: "False"
+  SECRET_KEY: "${SECRET_KEY:-docker-demo-insecure-key-change-me}"
+  ALLOWED_HOSTS: "localhost,127.0.0.1"
+  CSRF_TRUSTED_ORIGINS: "http://localhost:8000,http://127.0.0.1:8000"
+  DATABASE_URL: "postgres://elibrary:elibrary@db:5432/elibrary"
+  CACHE_URL: "redis://redis:6379/0"
+  DEFAULT_FROM_EMAIL: "library@example.test"
+  EMAIL_BACKEND: "django.core.mail.backends.console.EmailBackend"
+
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: elibrary
+      POSTGRES_USER: elibrary
+      POSTGRES_PASSWORD: elibrary
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U elibrary -d elibrary"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  web: &web-defaults
+    build: .
+    command: >
+      sh -c "python manage.py migrate &&
+             gunicorn elibrary.wsgi:application --bind 0.0.0.0:8000"
+    environment: *runtime-env
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # One-shot demo seeding, kept out of the web startup so real data is never
+  # seeded on every boot. Run explicitly:
+  #   docker compose --profile seed run --rm seed
+  seed:
+    <<: *web-defaults
+    command: python manage.py seed_demo --works 96
+    ports: []
+    restart: "no"
+    profiles: ["seed"]
+
+  worker:
+    build: .
+    command: python manage.py drain_outbox
+    environment: *runtime-env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  scheduler:
+    build: .
+    # Light sweeps every 5 min; heavy reconciliation/transit sweeps hourly (every
+    # 12th tick); prune retention once a day (every 288th tick).
+    command: >
+      sh -c "i=0; while true; do
+             if [ $$((i % 12)) -eq 0 ]; then python manage.py run_sweeps --full;
+             else python manage.py run_sweeps; fi;
+             if [ $$((i % 288)) -eq 0 ]; then python manage.py prune_logs; fi;
+             if [ $$((i % 2016)) -eq 0 ]; then python manage.py email_reports; fi;
+             i=$$((i + 1)); sleep 300; done"
+    environment: *runtime-env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # On-demand database backup:
+  #   docker compose --profile backup run --rm backup
+  # Writes a timestamped custom-format dump to ./backups. In production, schedule
+  # this off-box and ship dumps to durable off-host storage; restore with
+  # scripts/restore.sh (see docs/runbooks/disaster-recovery.md).
+  backup:
+    image: postgres:17
+    profiles: ["backup"]
+    environment:
+      PGPASSWORD: elibrary
+    volumes:
+      - ./backups:/backups
+    command: >
+      sh -c "pg_dump -h db -U elibrary -d elibrary -F c
+             -f /backups/elibrary-$$(date -u +%Y%m%dT%H%M%SZ).dump && echo 'backup written to ./backups'"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  postgres-data:

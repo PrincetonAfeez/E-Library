@@ -1,0 +1,24 @@
+<article class="work-card">
+  <a href="{{ work.get_absolute_url }}" class="cover" aria-label="{{ work.canonical_title }}">
+    {% with edition=work.editions.all.0 %}
+      {% if edition.cover_image %}
+        <img src="{{ edition.cover_image }}" alt="">
+      {% else %}
+        <span>{{ work.canonical_title|slice:":1" }}</span>
+      {% endif %}
+    {% endwith %}
+  </a>
+  <div class="work-copy">
+    <h2><a href="{{ work.get_absolute_url }}">{{ work.canonical_title }}</a></h2>
+    {% if work.subtitle %}<p class="subtitle">{{ work.subtitle }}</p>{% endif %}
+    <p class="byline">
+      {% for author in work.authors.all %}
+        {{ author.name }}{% if not forloop.last %}, {% endif %}
+      {% empty %}
+        Unknown author
+      {% endfor %}
+    </p>
+    <p class="summary">{{ work.summary|truncatewords:24 }}</p>
+  </div>
+</article>
+

@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Librarian{% endblock %}
+{% block content %}
+  <section class="page-stack">
+    <div class="result-header">
+      <h1>Librarian Dashboard</h1>
+      <a class="button secondary" href="{% url 'librarian_reports' %}">Reports</a>
+      {% if can_import %}
+        <a class="button secondary" href="{% url 'librarian_imports' %}">Catalog imports</a>
+      {% endif %}
+      {% if can_bill %}
+        <a class="button secondary" href="{% url 'billing_dashboard' %}">Billing</a>
+      {% endif %}
+    </div>
+    {% if dashboard.failed_outbox_events %}
+      <div class="message error">
+        {{ dashboard.failed_outbox_events }} notification event(s) failed delivery and need attention.
+      </div>
+    {% endif %}
+    <div class="ops-grid">
+      <section>
+        <h2>Overdue</h2>
+        <table>
+          <thead><tr><th>Title</th><th>Copy</th><th>Due</th><th>Patron</th></tr></thead>
+          <tbody>
+            {% for loan in dashboard.overdue_loans %}
+              <tr><td>{{ loan.copy.edition.work.canonical_title }}</td><td>{{ loan.copy.barcode }}</td><td>{{ loan.due_at|date:"M j" }}</td><td>{{ loan.patron }}</td></tr>
+            {% empty %}<tr><td colspan="4">Clear.</td></tr>{% endfor %}
+          </tbody>
+        </table>
+      </section>
+      <section>
+        <h2>Ready Holds</h2>
+        <table>
+          <thead><tr><th>Title</th><th>Patron</th><th>Pickup</th><th>Expires</th></tr></thead>
+          <tbody>
+            {% for hold in dashboard.ready_holds %}
+              <tr><td>{{ hold.work.canonical_title }}</td><td>{{ hold.patron }}</td><td>{{ hold.preferred_branch.name }}</td><td>{{ hold.expires_at|date:"M j" }}</td></tr>
+            {% empty %}<tr><td colspan="4">None ready.</td></tr>{% endfor %}
+          </tbody>
+        </table>
+      </section>
+      <section>
+        <h2>Waiting Holds</h2>
+        <table>
+          <thead><tr><th>Title</th><th>Patron</th><th>Pickup</th><th>Queued</th></tr></thead>
+          <tbody>
+            {% for hold in dashboard.waiting_holds %}
+              <tr><td>{{ hold.work.canonical_title }}</td><td>{{ hold.patron }}</td><td>{{ hold.preferred_branch.name }}</td><td>{{ hold.created_at|date:"M j" }}</td></tr>
+            {% empty %}<tr><td colspan="4">No queue.</td></tr>{% endfor %}
+          </tbody>
+        </table>
+      </section>
+    </div>
+  </section>
+{% endblock %}
+

@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}Account{% endblock %}
+{% block content %}
+  <section class="page-stack">
+    <div class="result-header">
+      <h1>Account</h1>
+      <a class="button secondary" href="{% url 'patron_settings' %}">Settings</a>
+    </div>
+    {% if fees %}
+      <section class="fees-panel">
+        <h2>Fines &amp; fees — {{ balance_cents }}&cent; owed</h2>
+        <table>
+          <thead><tr><th>Type</th><th>Description</th><th>Amount (&cent;)</th><th>Balance (&cent;)</th><th>Status</th></tr></thead>
+          <tbody>
+            {% for fee in fees %}
+              <tr>
+                <td>{{ fee.get_fee_type_display }}</td>
+                <td>{{ fee.description }}</td>
+                <td>{{ fee.amount_cents }}</td>
+                <td>{{ fee.balance_cents }}</td>
+                <td><span class="pill">{{ fee.get_status_display }}</span></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </section>
+    {% endif %}
+    {% if digital_loans or digital_holds %}
+      <section>
+        <h2>Digital</h2>
+        <table>
+          <thead><tr><th>Title</th><th>Type</th><th>Status</th><th>Expires</th></tr></thead>
+          <tbody>
+            {% for loan in digital_loans %}
+              <tr>
+                <td>{{ loan.license.edition.work.canonical_title }}</td>
+                <td>Loan</td>
+                <td><span class="pill">{{ loan.get_status_display }}</span></td>
+                <td>{{ loan.expires_at|date:"M j, Y" }}</td>
+              </tr>
+            {% endfor %}
+            {% for hold in digital_holds %}
+              <tr>
+                <td>{{ hold.edition.work.canonical_title }}</td>
+                <td>Hold</td>
+                <td><span class="pill">{{ hold.get_status_display }}</span></td>
+                <td>{{ hold.expires_at|date:"M j, Y"|default:"-" }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </section>
+    {% endif %}
+    <section>
+      <h2>Loans</h2>
+      <table>
+        <thead><tr><th>Title</th><th>Copy</th><th>Due</th><th>Status</th><th></th></tr></thead>
+        <tbody>
+          {% for loan in loans %}
+            <tr>
+              <td>{{ loan.copy.edition.work.canonical_title }}</td>
+              <td>{{ loan.copy.barcode }}</td>
+              <td>{{ loan.due_at|date:"M j, Y" }}</td>
+              <td><span class="pill">{{ loan.get_status_display }}</span></td>
+              <td class="table-actions">
+                <form method="post" action="{% url 'renew_loan' loan.pk %}">{% csrf_token %}<button class="secondary">Renew</button></form>
+                <form method="post" action="{% url 'return_loan' loan.pk %}">{% csrf_token %}<button>Return</button></form>
+              </td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="5">No active loans.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+    <section>
+      <h2>Holds</h2>
+      <table>
+        <thead><tr><th>Title</th><th>Pickup</th><th>Status</th><th>Position</th><th>Expires</th><th></th></tr></thead>
+        <tbody>
+          {% for hold in holds %}
+            <tr>
+              <td>{{ hold.work.canonical_title }}</td>
+              <td>{{ hold.preferred_branch.name }}</td>
+              <td><span class="pill">{{ hold.get_status_display }}</span></td>
+              <td>{% if hold.status == "ready" %}Ready{% else %}#{{ hold.queue_position }}{% endif %}</td>
+              <td>{{ hold.expires_at|date:"M j, Y"|default:"-" }}</td>
+              <td><form method="post" action="{% url 'cancel_hold' hold.pk %}">{% csrf_token %}<button class="secondary">Cancel</button></form></td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="6">No active holds.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  </section>
+{% endblock %}
+

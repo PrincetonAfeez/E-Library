@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% load static %}
+{% block title %}{{ manifest.title }} — Reader{% endblock %}
+{% block content %}
+  <section class="page-stack reader" aria-label="Digital reader">
+    <div class="result-header">
+      <h1>{{ manifest.title }}</h1>
+      <a class="button secondary" href="{% url 'account' %}">My account</a>
+    </div>
+    <p class="hint watermark-note">{{ manifest.watermark }} · access expires {{ manifest.expires_at|date:"M j, Y H:i" }}</p>
+
+    {{ manifest|json_script:"manifest-data" }}
+    <div id="reader-root"
+         data-format="{{ manifest.format }}"
+         data-loan="{{ loan.pk }}"
+         data-progress-url="{% url 'api_digital_progress' loan.pk %}"
+         data-content-base="/digital/content/">
+      <noscript><p>JavaScript is required to read this title.</p></noscript>
+    </div>
+  </section>
+
+  <script>
+  (function () {
+    const root = document.getElementById("reader-root");
+    const manifest = JSON.parse(document.getElementById("manifest-data").textContent);
+    const base = root.dataset.contentBase;
+    const fmt = root.dataset.format;
+
+    function csrf() {
+      const m = document.cookie.match(/csrftoken=([^;]+)/);
+      return m ? m[1] : "";
+    }
+    function saveProgress(locator, percent) {
+      fetch(root.dataset.progressUrl, {
+        method: "POST",
+        headers: {"Content-Type": "application/json", "X-CSRFToken": csrf()},
+        body: JSON.stringify({locator: locator, percent: percent}),
+      }).catch(function () {});
+    }
+
+    if (fmt === "text") {
+      const nav = document.createElement("nav");
+      nav.className = "chapter-list";
+      nav.setAttribute("aria-label", "Chapters");
+      const pane = document.createElement("article");
+      pane.className = "chapter-pane";
+      pane.setAttribute("aria-live", "polite");
+      pane.textContent = "Select a chapter to begin reading.";
+      root.appendChild(nav);
+      root.appendChild(pane);
+
+      (manifest.chapters || []).forEach(function (ch) {
+        const link = document.createElement("button");
+        link.className = "chapter-link";
+        link.textContent = ch.title;
+        link.addEventListener("click", function () {
+          fetch(base + ch.content_token + "/")
+            .then(function (r) { return r.ok ? r.text() : Promise.reject(); })
+            .then(function (text) {
+              pane.textContent = text;
+              const pct = manifest.chapters.length
+                ? Math.round(((ch.index + 1) / manifest.chapters.length) * 100) : 0;
+              saveProgress("chapter:" + ch.index, pct);
+            })
+            .catch(function () { pane.textContent = "Unable to load this chapter."; });
+        });
+        nav.appendChild(link);
+      });
+      // Resume where the patron left off.
+      const loc = (manifest.progress && manifest.progress.locator) || "";
+      if (loc.indexOf("chapter:") === 0) {
+        const idx = parseInt(loc.split(":")[1], 10);
+        const btns = nav.querySelectorAll(".chapter-link");
+        if (btns[idx]) { btns[idx].click(); }
+      }
+    } else if (fmt === "audio") {
+      const audio = document.createElement("audio");
+      audio.controls = true;
+      audio.src = base + manifest.content_token + "/";
+      audio.className = "audio-player";
+      audio.addEventListener("pause", function () {
+        const pct = audio.duration ? Math.round((audio.currentTime / audio.duration) * 100) : 0;
+        saveProgress("t:" + Math.floor(audio.currentTime), pct);
+      });
+      root.appendChild(audio);
+    } else if (fmt === "external") {
+      const link = document.createElement("a");
+      link.href = manifest.content_url;
+      link.className = "button";
+      link.textContent = "Open title";
+      root.appendChild(link);
+    } else {
+      const link = document.createElement("a");
+      link.href = base + manifest.content_token + "/";
+      link.className = "button";
+      link.textContent = "Download";
+      root.appendChild(link);
+    }
+  })();
+  </script>
+{% endblock %}

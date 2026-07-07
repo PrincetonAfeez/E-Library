@@ -1,0 +1,13 @@
+.env
+.venv
+.pytest_cache
+.ruff_cache
+.mypy_cache
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+staticfiles
+media
+.git
+

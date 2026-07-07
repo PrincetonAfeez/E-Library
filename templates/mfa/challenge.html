@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Two-factor verification{% endblock %}
+{% block content %}
+  <section class="page-stack narrow">
+    <h1>Two-factor verification</h1>
+    <p>Enter the 6-digit code from your authenticator app to continue.</p>
+    <form method="post" class="action-row">
+      {% csrf_token %}
+      <input type="hidden" name="next" value="{{ next }}">
+      <label class="visually-hidden" for="mfa-code">Authentication code</label>
+      <input id="mfa-code" name="code" inputmode="numeric" autocomplete="one-time-code"
+             maxlength="6" pattern="[0-9]*" placeholder="123456" required autofocus>
+      <button>Verify</button>
+    </form>
+  </section>
+{% endblock %}
