@@ -65,12 +65,15 @@ def _default_post(url: str, body: bytes, headers: dict) -> int:
     from urllib.parse import urlparse
 
     from . import circuit
+    from .net import validate_outbound_url
 
+    # Tenant-configured URL: reject non-http(s) schemes (file:/gopher:/…) first.
+    validate_outbound_url(url)
     request = urllib.request.Request(url, data=body, headers=headers, method="POST")
     # Trip a per-host breaker so a persistently failing endpoint is skipped fast
     # instead of retried on every sweep (CircuitOpen is handled like any failure).
     with circuit.guard(urlparse(url).netloc):
-        with urllib.request.urlopen(request, timeout=8) as response:  # noqa: S310 - tenant URL
+        with urllib.request.urlopen(request, timeout=8) as response:  # nosec B310 - scheme validated  # noqa: S310
             return response.status
 
 

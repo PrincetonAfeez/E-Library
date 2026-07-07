@@ -14,6 +14,7 @@ whitenoise==6.12.0
 gunicorn==26.0.0
 django-cors-headers==4.9.0
 django-csp==4.0
+defusedxml==0.7.1
 # Optional error monitoring (activated only when SENTRY_DSN is set):
 sentry-sdk>=2.0
 

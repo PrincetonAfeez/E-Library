@@ -6,11 +6,14 @@
   (never internal detail). 503 when a dependency is down.
 - `GET /status/` — public component status page.
 
-## Uptime monitoring (must be wired in prod)
-- Point an external monitor (UptimeRobot / Pingdom / Better Stack / Grafana
-  Synthetic) at `/readyz` on a 1-minute interval.
-- Alert a human on 2 consecutive failures via the paging tool (see
-  `incident-response.md`). This is an operational step, not code.
+## Uptime monitoring
+- **Shipped in-repo:** the `monitor` service (docker-compose.yml) polls `/readyz`
+  every 60s, logs failures, and POSTs to `ALERT_WEBHOOK_URL` after 2 consecutive
+  failures. Cron path: `scripts/uptime_check.sh`. Prometheus/Blackbox path +
+  alert rules: `ops/monitoring/`.
+- **Operational step:** point the alert webhook / Alertmanager at your paging
+  tool so a human is paged (see `incident-response.md`), and/or add an external
+  monitor (UptimeRobot / Better Stack) for out-of-band coverage.
 
 ## Logs
 - Structured JSON in deployed envs (`LOG_FORMAT=json`), one object per line with

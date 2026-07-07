@@ -11,7 +11,11 @@ from __future__ import annotations
 
 import io
 from dataclasses import dataclass, field
-from xml.etree import ElementTree as ET
+from xml.etree import ElementTree as ET  # used only to *build*/serialize XML
+
+# Parse untrusted uploads with the hardened parser (blocks XXE / entity-expansion
+# "billion laughs" attacks that the stdlib parser is vulnerable to).
+from defusedxml.ElementTree import fromstring as _safe_fromstring
 
 FIELD_TERMINATOR = b"\x1e"
 RECORD_TERMINATOR = b"\x1d"
@@ -127,7 +131,7 @@ def _parse_iso2709_record(chunk: bytes) -> MarcRecord | None:
 
 
 def parse_marcxml(data: bytes) -> list[MarcRecord]:
-    root = ET.fromstring(data)
+    root = _safe_fromstring(data)
     records: list[MarcRecord] = []
     record_elems = root.iter(f"{{{MARCXML_NS}}}record")
     # Also support namespace-less MARCXML.

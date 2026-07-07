@@ -15,14 +15,17 @@ dependencies = [
     "gunicorn>=22.0",
     "django-cors-headers>=4.4",
     "django-csp>=4.0",
+    "defusedxml>=0.7",
     "sentry-sdk>=2.0",
 ]
 
 [project.optional-dependencies]
 dev = [
+    "bandit>=1.7",
     "black>=24.0",
     "factory-boy>=3.3",
     "mypy>=1.10",
+    "pip-audit>=2.7",
     "pytest>=8.0",
     "pytest-django>=4.8",
     "ruff>=0.5",
@@ -39,6 +42,10 @@ include = ["elibrary*", "library*"]
 DJANGO_SETTINGS_MODULE = "elibrary.settings"
 python_files = ["tests.py", "test_*.py", "*_tests.py"]
 addopts = "-ra"
+
+[tool.bandit]
+# Tests use asserts and construct sample payloads; scan only application code.
+exclude_dirs = ["library/tests", ".venv", "staticfiles"]
 
 [tool.ruff]
 line-length = 100

@@ -1,0 +1,22 @@
+# Prometheus alerting rules for the production-grade monitoring path.
+# Use with blackbox_exporter probing /readyz and Alertmanager routing to a pager.
+groups:
+  - name: elibrary-availability
+    rules:
+      - alert: ELibraryDown
+        expr: probe_success{job="elibrary-readyz"} == 0
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: "E-Library /readyz failing"
+          description: "Readiness probe has failed for >2m; app is unhealthy."
+
+      - alert: ELibraryHighLatency
+        expr: probe_http_duration_seconds{job="elibrary-readyz"} > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "E-Library readiness latency high"
+          description: "Readiness probe latency > 1s for 5m (see docs/policies/slos.md)."

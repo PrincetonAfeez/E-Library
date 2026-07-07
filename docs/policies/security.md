@@ -17,10 +17,22 @@
 - **Secrets:** injected via env; none in source; `.env` gitignored.
 
 ## Security review process
-- Run the automated review on each change: `ruff` + the repo's `security-review`
-  pass on the branch diff before merge.
-- Dependency CVEs: Dependabot (`.github/dependabot.yml`) weekly; the pinned
-  `requirements.txt` makes advisories actionable.
+- **Automated SAST** — `bandit` runs in CI at medium+ severity/confidence over
+  `library` + `elibrary` (config in `pyproject.toml`). Locally: `bandit -c
+  pyproject.toml -r library elibrary --severity-level medium --confidence-level medium`.
+- **Dependency CVEs** — `pip-audit -r requirements.txt` runs in CI; Dependabot
+  (`.github/dependabot.yml`) opens update PRs weekly.
+- Run the repo's `security-review` pass on the branch diff before merge.
+
+### Last scan (2026-07-06)
+`bandit`: 0 High / 0 Medium in application code (679 Low are test asserts,
+excluded via `[tool.bandit]`). `pip-audit`: no known vulnerabilities.
+Findings fixed in this pass:
+- `search._stable_hash` MD5 marked `usedforsecurity=False` (non-crypto feature hash).
+- Outbound URLs validated to http(s) before `urlopen` (`library/net.py`) — blocks
+  `file:`/custom-scheme SSRF on tenant-configured webhook targets.
+- MARCXML parsing hardened with `defusedxml` (blocks XXE / entity-expansion).
+- SIP2 server now binds `127.0.0.1` by default (all-interfaces requires `--host`).
 
 ## Penetration testing (operational — cannot be satisfied in-repo)
 - Commission an independent pen test before GA and annually thereafter, plus after

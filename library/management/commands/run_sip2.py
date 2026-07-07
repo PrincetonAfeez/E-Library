@@ -11,7 +11,10 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("--org", required=True)
-        parser.add_argument("--host", default="0.0.0.0")
+        # Default to loopback; SIP2 is unauthenticated line-protocol, so binding
+        # to all interfaces must be an explicit, deliberate choice (--host 0.0.0.0
+        # behind a firewall / on a private network only).
+        parser.add_argument("--host", default="127.0.0.1")
         parser.add_argument("--port", type=int, default=6001)
 
     def handle(self, *args, **options):
