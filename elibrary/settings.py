@@ -141,9 +141,11 @@ REST_FRAMEWORK = {
         "rest_framework.throttling.AnonRateThrottle",
         "rest_framework.throttling.UserRateThrottle",
     ],
+    # Env-configurable so a staging/load-test environment can raise them (or a
+    # high-traffic tenant can be tuned) without a code change.
     "DEFAULT_THROTTLE_RATES": {
-        "anon": "120/minute",
-        "user": "600/minute",
+        "anon": env("THROTTLE_ANON", default="120/minute"),
+        "user": env("THROTTLE_USER", default="600/minute"),
     },
     # The browsable API is a convenience for development only; in production it
     # is an unnecessary surface, so ship JSON-only unless DEBUG is on.
