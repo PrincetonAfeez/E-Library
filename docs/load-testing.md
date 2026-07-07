@@ -1,8 +1,28 @@
 # Load & Capacity Testing
 
 The core read path (catalog search) is the highest-traffic surface and the one to
-size against. A [k6](https://k6.io) smoke/load script lives at
-`scripts/load/search_smoke.js`.
+size against. Two harnesses:
+
+- **HTTP load** — `scripts/load/search_smoke.js` ([k6](https://k6.io)) drives the
+  live endpoint at concurrency; run against staging (below).
+- **Core-path capacity** — `scripts/load/bench_search.py` times the search query
+  path (FTS + trigram + facets + serialization) directly against a seeded
+  PostgreSQL DB, isolating the work that determines capacity from web-tier noise.
+
+## Recorded results
+
+### Core-path benchmark (2026-07-06)
+`scripts/load/bench_search.py`, 200-work dataset, 500 requests, local single
+PostgreSQL 18, locmem cache:
+
+| Scenario | p50 | p95 | p99 |
+|----------|-----|-----|-----|
+| single-thread | 15.6 ms | 26.3 ms | 33.1 ms |
+| concurrent ×8 | 70.5 ms | 140.6 ms | 174.5 ms |
+
+Throughput ≈ 87 searches/s at 8 workers. **p95 is well under the 400 ms SLO**
+(`docs/policies/slos.md`) even at 8× concurrency on a single local DB. Re-run
+against a production-sized dataset + managed DB to size horizontally.
 
 ## Run
 ```bash

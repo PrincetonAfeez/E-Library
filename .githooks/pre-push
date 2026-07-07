@@ -7,10 +7,16 @@ set -e
 echo "[pre-push] ruff"
 ruff check .
 
+echo "[pre-push] bandit (SAST)"
+bandit -c pyproject.toml -r library elibrary --severity-level medium --confidence-level medium -q
+
+echo "[pre-push] pip-audit (dependency CVEs)"
+pip-audit -r requirements.txt
+
 echo "[pre-push] migration drift"
 python manage.py makemigrations --check --dry-run
 
 echo "[pre-push] system check"
 python manage.py check
 
-echo "[pre-push] OK (full tests run in CI)"
+echo "[pre-push] OK (full test suite runs in CI)"
