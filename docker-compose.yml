@@ -93,6 +93,35 @@ services:
       redis:
         condition: service_healthy
 
+  # Uptime monitor: polls /readyz and alerts a webhook after N consecutive
+  # failures (always logs failures; ships stdout to your log aggregator).
+  # Set ALERT_WEBHOOK_URL (Slack/Teams/generic) to enable alerting.
+  monitor:
+    image: curlimages/curl:8.11.1
+    environment:
+      HEALTH_URL: "http://web:8000/readyz/"
+      CHECK_INTERVAL: "60"
+      FAIL_THRESHOLD: "2"
+      ALERT_WEBHOOK_URL: "${ALERT_WEBHOOK_URL:-}"
+    command: >
+      sh -c 'fails=0;
+      while true; do
+        if curl -fsS -m 10 "$$HEALTH_URL" >/dev/null 2>&1; then fails=0;
+        else fails=$$((fails+1));
+          echo "$$(date -u +%Y-%m-%dT%H:%M:%SZ) uptime_check FAILED count=$$fails url=$$HEALTH_URL";
+          if [ "$$fails" -eq "$$FAIL_THRESHOLD" ] && [ -n "$$ALERT_WEBHOOK_URL" ]; then
+            curl -fsS -m 10 -X POST -H "Content-Type: application/json"
+              -d "{\"text\":\"E-Library DOWN: $$HEALTH_URL failed $$fails checks\"}"
+              "$$ALERT_WEBHOOK_URL" || true;
+          fi;
+        fi;
+        sleep "$$CHECK_INTERVAL";
+      done'
+    depends_on:
+      web:
+        condition: service_started
+    restart: unless-stopped
+
   # On-demand database backup:
   #   docker compose --profile backup run --rm backup
   # Writes a timestamped custom-format dump to ./backups. In production, schedule

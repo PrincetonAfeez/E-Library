@@ -41,6 +41,10 @@ jobs:
           pip install -e ".[dev]"
       - name: Lint (ruff)
         run: ruff check .
+      - name: Security scan (bandit SAST)
+        run: bandit -c pyproject.toml -r library elibrary --severity-level medium --confidence-level medium
+      - name: Dependency audit (pip-audit)
+        run: pip-audit -r requirements.txt
       - name: Migration drift check
         run: python manage.py makemigrations --check --dry-run
       - name: System check

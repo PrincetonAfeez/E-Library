@@ -25,9 +25,11 @@ def _default_fetch(url: str) -> bytes:
     from urllib.parse import urlparse
 
     from . import circuit
+    from .net import validate_outbound_url
 
+    validate_outbound_url(url)
     with circuit.guard(urlparse(url).netloc):
-        with urllib.request.urlopen(url, timeout=8) as response:  # noqa: S310 - fixed https host
+        with urllib.request.urlopen(url, timeout=8) as response:  # nosec B310 - scheme validated  # noqa: S310
             return response.read()
 
 

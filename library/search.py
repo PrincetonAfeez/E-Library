@@ -39,7 +39,10 @@ def _tokens(text: str) -> list[str]:
 
 
 def _stable_hash(token: str) -> int:
-    return int.from_bytes(hashlib.md5(token.encode("utf-8")).digest()[:8], "big")
+    # Non-cryptographic feature hash (bucketing tokens into embedding dimensions).
+    # usedforsecurity=False documents intent and satisfies security scanners.
+    digest = hashlib.md5(token.encode("utf-8"), usedforsecurity=False).digest()
+    return int.from_bytes(digest[:8], "big")
 
 
 def embed_text(text: str, *, dim: int = EMBED_DIM) -> list[float]:

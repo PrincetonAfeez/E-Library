@@ -15,6 +15,7 @@ import urllib.request
 from django.contrib.auth import get_user_model
 
 from .models import SsoIdentity
+from .net import validate_outbound_url
 from .services import DomainError
 
 User = get_user_model()
@@ -42,21 +43,23 @@ def _default_exchange(connection, code: str, redirect_uri: str) -> dict:
             "client_secret": connection.client_secret,
         }
     ).encode("utf-8")
+    validate_outbound_url(connection.token_url)
     request = urllib.request.Request(
         connection.token_url,
         data=body,
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=8) as response:  # noqa: S310 - configured IdP
+    with urllib.request.urlopen(request, timeout=8) as response:  # nosec B310 - scheme validated  # noqa: S310
         return json.loads(response.read())
 
 
 def _default_userinfo(connection, access_token: str) -> dict:
+    validate_outbound_url(connection.userinfo_url)
     request = urllib.request.Request(
         connection.userinfo_url, headers={"Authorization": f"Bearer {access_token}"}
     )
-    with urllib.request.urlopen(request, timeout=8) as response:  # noqa: S310 - configured IdP
+    with urllib.request.urlopen(request, timeout=8) as response:  # nosec B310 - scheme validated  # noqa: S310
         return json.loads(response.read())
 
 
