@@ -2,6 +2,22 @@
 
 Multi-tenant Django + HTMX library SaaS (ILS) based on `E-Library.md`.
 
+## Continuous integration
+
+The full pipeline (ruff → bandit SAST → pip-audit → migration-drift → system
+check → pytest) runs two ways, from the same steps:
+
+- **Locally, on every push** — `.githooks/pre-push` runs `scripts/ci.sh`
+  (enable once: `git config core.hooksPath .githooks`). Run it anytime with
+  `sh scripts/ci.sh`.
+- **Hosted, on every merge** — `.github/workflows/ci.yml` runs on push/PR the
+  moment the repo has a remote:
+  ```bash
+  gh repo create <org>/e-library --private --source=. --remote=origin --push
+  ```
+  Add a status badge once connected:
+  `![CI](https://github.com/<org>/e-library/actions/workflows/ci.yml/badge.svg)`
+
 The build includes a shared bibliographic spine (`Work`, `Edition`, `Author`, `Subject`), tenant-scoped holdings and circulation (`Organization`, `Branch`, `Copy`, `Loan`, `Hold`), PostgreSQL search documents, transactional circulation services, HTMX catalog/account/librarian pages, DRF APIs, an outbox worker, scheduled sweeps, seed data, and ADRs.
 
 ## Feature modules

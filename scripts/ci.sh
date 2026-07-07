@@ -6,6 +6,12 @@ set -e
 echo "==> ruff"
 ruff check .
 
+echo "==> bandit (SAST)"
+bandit -c pyproject.toml -r library elibrary --severity-level medium --confidence-level medium -q
+
+echo "==> pip-audit (dependency CVEs)"
+pip-audit -r requirements.txt
+
 echo "==> migration drift"
 python manage.py makemigrations --check --dry-run
 
