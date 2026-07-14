@@ -1,3 +1,4 @@
+"""Delete aged log and event rows to bound table growth."""
 from datetime import timedelta
 
 from django.core.management.base import BaseCommand

@@ -1,3 +1,4 @@
+"""Add max_renewals field to the Branch model."""
 from django.db import migrations, models
 
 

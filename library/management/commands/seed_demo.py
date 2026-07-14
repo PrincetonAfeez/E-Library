@@ -1,3 +1,4 @@
+"""Seed a demo library with catalog, copies, users, and staff."""
 from random import Random
 
 from django.contrib.auth import get_user_model

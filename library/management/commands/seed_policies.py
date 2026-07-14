@@ -1,3 +1,4 @@
+"""Seed default patron types, material types, and circulation policies."""
 from django.core.management.base import BaseCommand, CommandError
 
 from library.models import CirculationPolicy, MaterialType, Organization, PatronType

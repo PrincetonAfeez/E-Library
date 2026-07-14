@@ -1,3 +1,4 @@
+"""Rebuild denormalized work-level search documents."""
 from django.core.management.base import BaseCommand
 
 from library.models import Work

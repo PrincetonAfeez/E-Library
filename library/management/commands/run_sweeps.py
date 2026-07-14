@@ -1,3 +1,4 @@
+"""Run idempotent scheduled circulation sweeps."""
 from django.core.management.base import BaseCommand
 
 from library.billing import run_billing_cycle

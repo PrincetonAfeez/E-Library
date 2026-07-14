@@ -1,3 +1,4 @@
+"""Django ORM models for catalog, circulation, billing, and operations."""
 import hashlib
 import secrets
 

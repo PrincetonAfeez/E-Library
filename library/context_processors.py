@@ -1,3 +1,4 @@
+"""Template context processor exposing the current organization."""
 from .tenancy import get_current_organization
 
 

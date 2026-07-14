@@ -1,3 +1,4 @@
+"""Run a minimal SIP2 self-check TCP server."""
 import socketserver
 
 from django.core.management.base import BaseCommand, CommandError

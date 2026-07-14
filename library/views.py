@@ -1,3 +1,4 @@
+"""HTMX web views for catalog, account, and librarian workflows."""
 import hashlib
 import logging
 import secrets

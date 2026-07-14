@@ -1,3 +1,4 @@
+"""Create or refresh standard subscription plan tiers."""
 from django.core.management.base import BaseCommand
 
 from library.models import Plan

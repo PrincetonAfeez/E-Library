@@ -1,3 +1,4 @@
+"""Tests for signed catalog cursor encoding and validation."""
 import pytest
 
 from library.pagination import CursorError, decode_cursor, encode_cursor

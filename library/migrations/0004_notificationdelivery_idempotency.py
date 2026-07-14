@@ -1,3 +1,4 @@
+"""Add idempotency constraint on notification deliveries."""
 from django.db import migrations, models
 
 
