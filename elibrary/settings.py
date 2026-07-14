@@ -1,3 +1,4 @@
+"""Django settings for the E-Library project."""
 from pathlib import Path
 
 import environ
