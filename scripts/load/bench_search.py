@@ -1,5 +1,5 @@
 """Core-path capacity benchmark for catalog search.
-
+ 
 Measures the latency of the search query path (FTS + trigram + facets +
 serialization) directly against a seeded PostgreSQL database — the work that
 actually determines read capacity — without dev-server / throttle noise.

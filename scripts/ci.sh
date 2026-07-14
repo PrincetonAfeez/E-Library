@@ -3,6 +3,14 @@
 # DATABASE_URL / CACHE_URL set (Postgres + Redis reachable) for the test step.
 set -e
 
+# Git hooks don't inherit an activated venv; prefer project tools when present.
+if [ -d ".venv/bin" ]; then
+  PATH="$(pwd)/.venv/bin:$PATH"
+elif [ -d ".venv/Scripts" ]; then
+  PATH="$(pwd)/.venv/Scripts:$PATH"
+fi
+export PATH
+
 echo "==> ruff"
 ruff check .
 
