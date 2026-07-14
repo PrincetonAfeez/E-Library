@@ -1,3 +1,4 @@
+"""Drain pending outbox events with SKIP LOCKED claiming."""
 import time
 
 from django.core.management.base import BaseCommand

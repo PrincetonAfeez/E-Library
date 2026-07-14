@@ -1,3 +1,4 @@
+"""Add transit_attempts field to the Hold model."""
 from django.db import migrations, models
 
 

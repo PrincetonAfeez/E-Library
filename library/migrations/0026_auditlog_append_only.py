@@ -1,3 +1,4 @@
+"""Enforce append-only audit logs at the database level."""
 from django.db import migrations
 
 # Enforce append-only audit logs at the database level: reject any UPDATE on

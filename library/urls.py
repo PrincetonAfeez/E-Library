@@ -1,3 +1,4 @@
+"""URL routing for HTMX web views and staff pages."""
 from django.urls import path
 
 from . import api, views

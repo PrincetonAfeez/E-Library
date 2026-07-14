@@ -1,3 +1,4 @@
+"""Multi-tenant organization resolution from requests and users."""
 from django.core.exceptions import ObjectDoesNotExist
 from django.shortcuts import get_object_or_404
 

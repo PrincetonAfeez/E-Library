@@ -1,3 +1,4 @@
+"""Complex read queries for catalog search, availability, and dashboards."""
 from __future__ import annotations
 
 from dataclasses import dataclass

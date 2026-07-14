@@ -1,3 +1,4 @@
+"""Django forms for signup, catalog, and account settings."""
 from __future__ import annotations
 
 from django import forms

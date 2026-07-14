@@ -1,3 +1,4 @@
+"""Enforce delivery idempotency across all statuses."""
 from django.db import migrations, models
 
 

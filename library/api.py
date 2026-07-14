@@ -1,3 +1,4 @@
+"""DRF API views and endpoints for catalog, circulation, and operations."""
 import csv
 import hashlib
 

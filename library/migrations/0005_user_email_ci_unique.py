@@ -1,3 +1,4 @@
+"""Add case-insensitive unique index on user email."""
 from django.conf import settings
 from django.db import migrations
 

@@ -1,3 +1,4 @@
+"""DRF serializers for catalog and circulation API responses."""
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 

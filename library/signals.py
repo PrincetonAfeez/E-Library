@@ -1,3 +1,4 @@
+"""Django signals that keep search documents in sync with catalog changes."""
 import contextlib
 import threading
 

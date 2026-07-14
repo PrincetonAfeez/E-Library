@@ -1,3 +1,4 @@
+"""Tests for circulation and catalog service-layer mutations."""
 import pytest
 from django.contrib.auth import get_user_model
 

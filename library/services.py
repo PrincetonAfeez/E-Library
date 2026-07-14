@@ -1,3 +1,4 @@
+"""Transactional business logic for circulation, catalog, and notifications."""
 from __future__ import annotations
 
 import logging

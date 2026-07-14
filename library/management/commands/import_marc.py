@@ -1,3 +1,4 @@
+"""Import MARC records into the catalog."""
 from pathlib import Path
 
 from django.contrib.auth import get_user_model

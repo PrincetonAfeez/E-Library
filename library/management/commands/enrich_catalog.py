@@ -1,3 +1,4 @@
+"""Enrich editions with external ISBN metadata."""
 from django.core.management.base import BaseCommand, CommandError
 
 from library.enrichment import enrich_edition

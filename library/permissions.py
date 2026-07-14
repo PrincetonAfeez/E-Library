@@ -1,3 +1,4 @@
+"""DRF permission classes and staff role authorization helpers."""
 from rest_framework import permissions
 
 from .tenancy import get_current_organization
