@@ -1,6 +1,4 @@
-# Project 75 — E-Library Enterprise Capstone: Catalog, Search, Pagination, Filtering + Circulation (v3)
-
-**Type:** Standalone build. No dependencies on, and no reuse by, any other project. Scoped as if it is the only thing being built.
+E-Library Enterprise Capstone: Catalog, Search, Pagination, Filtering + Circulation
 
 **One-line:** A production-ready Django + HTMX e-library system: a fast, searchable, faceted, paginated catalog backed by PostgreSQL full-text search, plus a correct multi-copy circulation engine with branch-aware inventory, holds, renewals, overdue tracking, notifications, librarian operations, support tooling, and a first-class API.
 
