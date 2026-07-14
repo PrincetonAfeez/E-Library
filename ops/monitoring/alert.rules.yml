@@ -1,4 +1,4 @@
-# Prometheus alerting rules for the production-grade monitoring path.
+# Prometheus alerting rules for the production-grade monitoring path. 
 # Use with blackbox_exporter probing /readyz and Alertmanager routing to a pager.
 groups:
   - name: elibrary-availability

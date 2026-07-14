@@ -1,5 +1,5 @@
 # ADR-0001: PostgreSQL Full-Text Search
-
+ 
 ## Status
 
 Accepted.
