@@ -1,5 +1,5 @@
 # Monitoring options
-
+ 
 Two ready paths for uptime alerting (see also `docs/runbooks/monitoring.md`):
 
 ## 1. Built-in monitor (simplest)
