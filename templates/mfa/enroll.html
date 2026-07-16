@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Enroll MFA{% endblock %}
+{% block content %}
+  <section class="page-stack narrow">
+    <h1>Enroll multi-factor authentication</h1>
+    <p>Your library requires a second factor for staff access.</p>
+    {% if info %}
+      <p>Secret: <code>{{ info.secret }}</code></p>
+      <p class="muted">Add this in your authenticator app, then confirm a code.</p>
+      <form method="post" class="action-row">
+        {% csrf_token %}
+        <input type="hidden" name="next" value="{{ next }}">
+        <input type="hidden" name="action" value="confirm">
+        <label class="visually-hidden" for="mfa-code">Authentication code</label>
+        <input id="mfa-code" name="code" inputmode="numeric" autocomplete="one-time-code"
+               maxlength="6" pattern="[0-9]*" placeholder="123456" required autofocus>
+        <button>Confirm</button>
+      </form>
+    {% else %}
+      <form method="post" class="action-row">
+        {% csrf_token %}
+        <input type="hidden" name="next" value="{{ next }}">
+        <input type="hidden" name="action" value="begin">
+        <button>Generate secret</button>
+      </form>
+    {% endif %}
+  </section>
+{% endblock %}
