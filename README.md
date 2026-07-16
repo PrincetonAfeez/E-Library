@@ -41,7 +41,7 @@ backup/restore), incident response, monitoring, staging, SLOs, security,
 compliance mapping, data retention/residency, subprocessors, API versioning,
 caching, SSO, and load testing. ADRs are in [`docs/adrs/`](docs/adrs/).
 
-Backups: `scripts/backup.sh` / `scripts/restore.sh` (or `docker compose --profile backup run --rm backup`).
+Backups: `scripts/backup.sh` / `scripts/restore.sh` (or `docker compose --profile backup run --rm backup`). Monthly restore drill: `python scripts/restore_drill.py` (see `docs/runbooks/disaster-recovery.md`).
 
 ## Run with Docker
 
