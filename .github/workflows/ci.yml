@@ -49,5 +49,11 @@ jobs:
         run: python manage.py makemigrations --check --dry-run
       - name: System check
         run: python manage.py check
+      - name: OpenAPI schema
+        # Generate schema (full --validate is noisy on thin APIViews; generation
+        # still catches import/route breakage).
+        run: python manage.py spectacular --file /tmp/schema.yml
+      - name: Type check (mypy)
+        run: mypy --follow-imports=skip library/crypto.py library/entitlements.py library/net.py library/mfa.py library/sso.py library/sip2.py
       - name: Tests
         run: pytest -q
