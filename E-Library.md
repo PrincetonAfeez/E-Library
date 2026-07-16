@@ -1,10 +1,10 @@
 E-Library Enterprise Capstone: Catalog, Search, Pagination, Filtering + Circulation
 
-**One-line:** A production-ready Django + HTMX e-library system: a fast, searchable, faceted, paginated catalog backed by PostgreSQL full-text search, plus a correct multi-copy circulation engine with branch-aware inventory, holds, renewals, overdue tracking, notifications, librarian operations, support tooling, and a first-class API.
+**One-line:** A Django + HTMX multi-tenant e-library (ILS) foundation: searchable catalog, multi-copy circulation, holds/renewals, notifications, librarian ops, support diagnostics API, and a first-class REST API — v0.1.0 capstone, not a claim that every enterprise surface is complete.
 
-**Register:** Mastery of Python + system architecture. Enterprise-grade, production-ready, go-to-market-grade.
+**Register:** Mastery of Python + system architecture. Enterprise-oriented foundation targeting go-to-market completeness.
 
-**Stack constraint:** Entire app in the Python ecosystem. Web layer is Django + HTMX. API layer is Django REST Framework. Database is PostgreSQL. Search lives inside PostgreSQL using full-text search and `pg_trgm`; no Elasticsearch/OpenSearch. A shared cache (Redis or DB-backed) serves facet/search caching and throttle state. A worker + scheduler process drains the outbox and runs time-based sweeps. No Channels/WebSockets. No fines/payments.
+**Stack constraint:** Entire app in the Python ecosystem. Web layer is Django + HTMX. API layer is Django REST Framework. Database is PostgreSQL. Search lives inside PostgreSQL using full-text search and `pg_trgm`; no Elasticsearch/OpenSearch. A shared cache (Redis or DB-backed) serves facet/search caching and throttle state. A worker + scheduler process drains the outbox and runs time-based sweeps. No Channels/WebSockets. SaaS billing (subscriptions) and patron fines (fee policies, online pay, waivers, refunds) are in scope via `library/billing.py` and `library/finance.py`.
 
 > **Changes in v3 (architecture pass).** Scope is *not* reduced. v2 was the strongest draft in the series — the search spine and the circulation crux are both sound and largely untouched — so this revision makes two decisions v2 left open and deepens the two cruxes.
 > - **Decided — tenancy grain:** `Organization` is a true tenant boundary, and the build uses a **shared bibliographic spine** (Work/Edition/Author/Subject are platform-global, deduped and authority-controlled once) with **tenant-scoped holdings** (Copy, circulation, holds, patrons, policies). Search filters holdings by org at query time (§3.1a, ADR-0013).
@@ -38,7 +38,7 @@ The core promise: **a patron can reliably find a book, and the library can relia
 | 5 | Copies | Multiple copies per edition; availability derived from individual copy state, never a hand-maintained counter |
 | 6 | Holds | FIFO holds are in scope; ready holds reserve a specific copy via `assigned_copy` |
 | 7 | Renewals | In scope with explicit policy rules; blocked when waiting holds exist |
-| 8 | Overdue | Due dates and overdue tracking in scope; no fines or payments |
+| 8 | Overdue & fines | Due dates and overdue tracking in scope; optional overdue fines via `FeePolicy`; patron fee pay/waive/refund and org SaaS billing/subscriptions |
 | 9 | Roles | Patron, Librarian, Branch Manager, Admin, and Support; server-side permissions everywhere |
 | 10 | Filtering | Faceted filtering with live counts |
 | 11 | Pagination | Offset pagination for shallow web browse; cursor/keyset pagination for API and HTMX infinite scroll |
@@ -319,7 +319,8 @@ Renewal rules:
 ### 6.5 Overdue
 
 - A scheduled sweep flags active loans past `due_at` as overdue. Due-date, due-soon, and overdue boundaries are evaluated in the **branch timezone** (local midnight), not a server-global clock, so a loan "due today" is correct per branch.
-- No fines/payments are in scope.
+- Overdue fines are assessed per `FeePolicy` (grace period, daily cap, one fee per loan); patrons may pay online or on a payment plan; librarians may waive or refund per policy (`library/finance.py`).
+- Org-level SaaS subscriptions (plans, trials, dunning, Stripe/simulated checkout) live in `library/billing.py` — separate from patron circulation fines.
 - Overdue state appears in patron account, librarian dashboard, and notification workflows.
 - Overdue sweep is idempotent and safe to rerun.
 
@@ -770,25 +771,21 @@ Regardless of mechanism:
 
 - Structured JSON logs with request ID, user ID where safe, branch ID, job ID, service name, and latency.
 - Error tracking via Sentry or equivalent.
-- `/healthz` endpoint checks app and database connectivity.
+- `/healthz` is process liveness (always 200 if the worker is up). Database and
+  cache connectivity are checked by `/readyz` (use that for load-balancer readiness).
 - Metrics for search latency, facet latency, borrow success/failure, hold placement, hold expiry, overdue count, notification delivery, import failures, and outbox backlog.
 - Slow-query monitoring for search/facets/circulation hot paths.
 
 ### 16.4 Support console
 
-Support tools:
-- Patron lookup.
-- Loan history.
-- Hold queue inspection.
-- Copy history.
-- Search document inspection.
-- Reindex Work/Edition.
-- View notification delivery history.
-- View import batch details.
-- View domain events and audit timeline.
-- Repair stuck hold/copy state with reason.
-- Force-return with reason.
-- Cancel hold with reason.
+**Shipped today:** audited read-only patron lookup via
+`GET /api/v1/support/patrons/?card=&reason=` (requires the `support` staff
+permission). Impersonation is not implemented.
+
+**Not yet built** (do not treat as available): loan/hold/copy history UI,
+search-document inspection, reindex controls, notification/import/event viewers,
+force-return, hold cancel, or stuck-state repair from a dedicated support console.
+Circulation repair continues to go through normal librarian APIs with audit.
 
 Support tooling must never allow silent mutation.
 
@@ -952,8 +949,8 @@ ADR-0019: Reader privacy is by design — the patron↔copy link is anonymized a
 20. Object-level permissions prevent patrons from accessing others' loans/holds/notifications.
 21. Reader privacy holds: the patron↔copy link is anonymized after return by default; patron erasure tombstones identity while preserving anonymized audit.
 22. Staff/support actions are audited with actor, reason where applicable, request ID, before/after, and timestamp.
-23. Support console can inspect and repair stuck circulation/search states with audited reasons.
-24. Production posture is verifiable: `DEBUG=False`, env secrets, HTTPS/cookies/CSRF, rate limits in a shared cache, upload validation, PII-safe logging, Sentry, `/healthz`.
+23. Support role can run audited patron lookup; deeper support-console repairs remain future work.
+24. Production posture is verifiable: `DEBUG=False`, env secrets, HTTPS/cookies/CSRF, rate limits in a shared cache, upload validation, PII-safe logging, Sentry, `/healthz` + `/readyz`.
 25. CI runs tests against PostgreSQL, not SQLite; includes lint/type checks, migration checks, OpenAPI check, and security/dependency scans.
 26. Performance targets are measured against a large seed dataset with `EXPLAIN ANALYZE` notes for critical queries.
 27. `docker-compose up` runs the app with PostgreSQL, cache, worker, scheduler, seed data, migrations, and working web/API flows.
@@ -984,9 +981,9 @@ ADR-0019: Reader privacy is by design — the patron↔copy link is anonymized a
 20. Import/export pipeline with staged validation and reindexing.
 21. DRF API: public (anonymous, ETag) catalog/search/facets, token/key patron circulation, librarian routes, session for browser, OpenAPI, throttling, stable errors.
 22. Search analytics and admin tuning reports.
-23. Support console with audited diagnostics/repairs.
+23. Support patron lookup with audited reason (broader console TBD).
 24. Security pass: CSRF, HTTPS/cookies, CORS/CSP, rate limits, upload validation, PII logging, object permissions.
-25. Observability: structured logs, Sentry, `/healthz`, metrics, slow-query checks.
+25. Observability: structured logs, Sentry, `/healthz` + `/readyz`, metrics, slow-query checks.
 26. CI/quality pass: PostgreSQL tests, lint, type checks, migration checks, OpenAPI checks, security scans.
 27. Deployment pass: managed PostgreSQL, TLS, static/media storage, backup/restore notes, full Definition of Done walkthrough.
 
@@ -994,7 +991,7 @@ ADR-0019: Reader privacy is by design — the patron↔copy link is anonymized a
 
 ## 23. Non-Goals and Boundaries
 
-- No fines/payments.
+- No card PAN storage (payment provider handles cards; app stores brand/last4 only).
 - No external search service.
 - No Channels/WebSockets.
 - No full MARC21 cataloging system unless deliberately added later.
