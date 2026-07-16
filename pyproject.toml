@@ -17,6 +17,9 @@ dependencies = [
     "django-csp>=4.0",
     "defusedxml>=0.7",
     "sentry-sdk>=2.0",
+    "cryptography>=42.0",
+    "stripe>=11.0",
+    "django-storages[boto3]>=1.14",
 ]
 
 [project.optional-dependencies]
@@ -27,6 +30,7 @@ dev = [
     "mypy>=1.10",
     "pip-audit>=2.7",
     "pytest>=8.0",
+    "pytest-cov>=5.0",
     "pytest-django>=4.8",
     "ruff>=0.5",
 ]
@@ -43,6 +47,24 @@ DJANGO_SETTINGS_MODULE = "elibrary.settings"
 python_files = ["tests.py", "test_*.py", "*_tests.py"]
 addopts = "-ra"
 
+[tool.coverage.run]
+branch = false
+source = ["library"]
+omit = [
+    "library/migrations/*",
+    "library/tests/*",
+    "library/management/commands/seed_demo.py",
+]
+
+[tool.coverage.report]
+skip_covered = false
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+]
+
 [tool.bandit]
 # Tests use asserts and construct sample payloads; scan only application code.
 exclude_dirs = ["library/tests", ".venv", "staticfiles"]
@@ -58,3 +80,11 @@ ignore = ["E501", "DJ001", "DJ008", "DJ012"]
 [tool.black]
 line-length = 100
 target-version = ["py312"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+warn_unused_ignores = true
+check_untyped_defs = false
+files = ["library", "elibrary"]
+exclude = ["library/migrations/", "library/tests/"]
