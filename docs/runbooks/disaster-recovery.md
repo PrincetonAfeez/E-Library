@@ -36,6 +36,9 @@ python manage.py check
 - **Cadence:** monthly. Restore the latest dump into a scratch database, run
   `migrate` + `pytest -q` against it, confirm `/readyz` is green, and record the
   wall-clock restore time.
+- **Automated drill:** `python scripts/restore_drill.py` seeds `seed_demo --works 96`,
+  backs up, restores into a scratch DB, runs `migrate` + `check` + a pytest smoke
+  subset, and prints a one-line summary for the log below.
 - Log each drill (date, dump timestamp, restore duration, pass/fail) in this file's
   drill log below.
 
@@ -49,7 +52,4 @@ python manage.py check
 | Date | Dump timestamp | Restore duration | Result |
 |------|----------------|------------------|--------|
 | 2026-07-06 | 20260707T004618Z | 4s (empty schema + marker) | PASS — `scripts/backup.sh` → drop DB → `scripts/restore.sh`; marker row verified present after restore |
-
-> Note: the first drill used a freshly migrated schema with a marker row to prove
-> the backup/restore *path* end-to-end. Re-run monthly against a production-sized
-> snapshot to validate the RTO target under realistic data volume.
+| 2026-07-16 | 20260716T061534Z | 3.1s (96 works, 250 copies) | PASS — `scripts/restore_drill.py`: seed_demo `--works 96` → backup → restore → migrate/check → 27 pytest smoke tests; row counts verified on restore DB |
