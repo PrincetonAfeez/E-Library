@@ -1,8 +1,10 @@
 # Disaster Recovery Runbook
 
 ## Targets
-- **RPO (max data loss):** 15 minutes — achieved with continuous WAL archiving / a
-  managed-Postgres PITR tier, or 24h with the daily logical dump below.
+- **RPO (max data loss):** **15 minutes only if the operator enables continuous WAL
+  archiving / managed Postgres PITR** — that is **not** implemented by this repo.
+  `scripts/backup.sh` is a logical `pg_dump`; with dump-only backups, RPO ≈ the
+  dump interval (typically 24h for a daily job).
 - **RTO (max downtime):** 1 hour for a full region-loss restore.
 
 ## What is backed up
