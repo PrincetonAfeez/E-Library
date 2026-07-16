@@ -26,6 +26,12 @@ python manage.py makemigrations --check --dry-run
 echo "==> system check"
 python manage.py check
 
+echo "==> OpenAPI schema"
+python manage.py spectacular --file /tmp/schema.yml
+
+echo "==> mypy"
+mypy --follow-imports=skip library/crypto.py library/entitlements.py library/net.py library/mfa.py library/sso.py library/sip2.py
+
 echo "==> tests"
 pytest -q
 
