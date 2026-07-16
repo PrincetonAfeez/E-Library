@@ -1,3 +1,5 @@
+"""Configuration for pytest."""
+
 import pytest
 
 
@@ -15,6 +17,11 @@ def _isolate_cache(settings):
             "LOCATION": "elibrary-tests",
         }
     }
+    # Permit loopback IdP fixtures used by end-to-end OIDC tests (IP only —
+    # "localhost" stays blocked by the SSRF guard).
+    settings.OUTBOUND_URL_ALLOW_HOSTS = ["127.0.0.1"]
+    # Tests still create some plaintext secrets; production defaults to disallow.
+    settings.DISALLOW_PLAINTEXT_SECRETS = False
     from django.core.cache import cache
 
     cache.clear()
