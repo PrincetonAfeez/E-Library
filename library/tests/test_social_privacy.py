@@ -10,6 +10,7 @@ from library.models import (
     Copy,
     Edition,
     Fee,
+    FeeStatus,
     FeeType,
     LoanStatus,
     Organization,
@@ -149,11 +150,14 @@ def test_erase_patron_scrubs_and_anonymizes():
     patron.save(update_fields=["retain_loan_history"])
     loan = borrow_work(patron=patron, work=work, branch=branch, actor=patron.user)
     return_loan(loan=loan, actor=patron.user)
+    fee = Fee.objects.create(
+        organization=org, patron=patron, fee_type=FeeType.MANUAL, amount_cents=200, status=FeeStatus.PAID
+    )
     social.submit_review(patron=patron, work=work, rating=5)
     patron_pk = patron.pk
 
     privacy.erase_patron(patron=patron, actor=user)
-    # Profile + owned data gone; loan retained but anonymized.
+    # Profile + owned data gone; loan + fee ledger retained but anonymized.
     assert not PatronProfile.objects.filter(pk=patron_pk).exists()
     assert not Review.objects.filter(patron_id=patron_pk).exists()
     from library.models import Loan
@@ -161,6 +165,8 @@ def test_erase_patron_scrubs_and_anonymizes():
     loan = Loan.objects.filter(copy=copy).order_by("-id").first()
     assert loan.patron_id is None and loan.patron_hash
     assert loan.status == LoanStatus.RETURNED
+    fee.refresh_from_db()
+    assert fee.patron_id is None and fee.patron_hash
     # User anonymized + disabled.
     user.refresh_from_db()
     assert user.username.startswith("erased-")

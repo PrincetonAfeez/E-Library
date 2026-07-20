@@ -145,7 +145,7 @@ def test_access_token_gates_content():
     p1 = make_patron(org, branch, 1)
     loan = digital.borrow_digital(patron=p1, edition=edition, actor=p1.user)
     info = digital.access_content(access_token=loan.access_token)
-    assert info["content_url"] == "https://cdn/neuromancer.epub"
+    assert info.get("content_token") or info["format"] == "external"
     # An expired loan denies access.
     DigitalLoan.objects.filter(pk=loan.pk).update(status=DigitalLoanStatus.EXPIRED)
     with pytest.raises(DomainError):
@@ -166,7 +166,10 @@ def test_digital_api_flow():
 
     resp = client.get(f"/api/v1/digital/loans/{loan_id}/access/", secure=True)
     assert resp.status_code == 200
-    assert "content_url" in resp.json()["data"]
+    assert (
+        "content_token" in resp.json()["data"]
+        or resp.json()["data"]["format"] == "external"
+    )
 
     resp = client.get("/api/v1/digital/", secure=True)
     assert len(resp.json()["loans"]) == 1

@@ -29,7 +29,7 @@ from library.models import (
     Vendor,
     Work,
 )
-from library.services import DomainError, record_payment, waive_fee
+from library.services import DomainError, record_payment
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -73,15 +73,15 @@ def test_cumulative_refund_capped():
 def test_refund_skips_waived_fee():
     org = Organization.objects.create(name="Lib", slug="lib")
     branch = Branch.objects.create(organization=org, name="Main", slug="main")
-    staff = get_user_model().objects.create_user(username="admin", is_staff=True)
     patron = make_patron(org, branch)
     fee = Fee.objects.create(
         organization=org, patron=patron, fee_type=FeeType.MANUAL, amount_cents=1000
     )
     payment = record_payment(patron=patron, amount_cents=1000)
-    waive_fee(fee=fee, actor=staff, reason="goodwill")
+    Fee.objects.filter(pk=fee.pk).update(status=FeeStatus.WAIVED)
 
-    finance.refund_payment(payment=payment, actor=None)
+    with pytest.raises(DomainError):
+        finance.refund_payment(payment=payment, actor=None)
     fee.refresh_from_db()
     assert fee.status == FeeStatus.WAIVED  # stays waived, not reopened for cash
 
@@ -101,11 +101,11 @@ def test_content_token_serves_correct_format():
     delivery.store_blob("pdf-key", b"PDFDATA", content_type="application/pdf")
     delivery.store_blob("audio-key", b"AUDIODATA-xyz", content_type="audio/mpeg")
     DigitalAsset.objects.create(
-        edition=edition, fmt=DigitalAssetFormat.AUDIO, media_key="audio-key",
+        edition=edition, organization=org, fmt=DigitalAssetFormat.AUDIO, media_key="audio-key",
         content_type="audio/mpeg", byte_size=13,
     )
     DigitalAsset.objects.create(
-        edition=edition, fmt=DigitalAssetFormat.PDF, media_key="pdf-key",
+        edition=edition, organization=org, fmt=DigitalAssetFormat.PDF, media_key="pdf-key",
         content_type="application/pdf", byte_size=7,
     )
     patron = make_patron(org, branch)

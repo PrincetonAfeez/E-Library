@@ -117,13 +117,35 @@ def test_event_api_flow():
 # --------------------------------------------------------------------------- #
 # SIP2
 # --------------------------------------------------------------------------- #
+def _sip2_session(org, user="sc", password="secret"):
+    org.sip2_login_user = user
+    org.sip2_login_password = password
+    org.save(update_fields=["sip2_login_user", "sip2_login_password"])
+    session = {}
+    assert sip2.handle_message(
+        f"93CN{user}|CO{password}|", organization=org, session=session
+    ) == "941"
+    return session
+
+
+def test_sip2_login_rejects_bad_credentials():
+    org, branch, work, edition, copy = make_catalog()
+    org.sip2_login_user = "sc"
+    org.sip2_login_password = "secret"
+    org.save(update_fields=["sip2_login_user", "sip2_login_password"])
+    session = {}
+    assert sip2.handle_message("93CNsc|COwrong|", organization=org, session=session) == "940"
+    assert session.get("authenticated") is False
+
+
 def test_sip2_checkout_and_checkin():
     org, branch, work, edition, copy = make_catalog()
     make_patron(org, branch, 1, "CARD-1")
+    session = _sip2_session(org)
 
     # 11 Checkout: <code>...|AA card|AB barcode|
     resp = sip2.handle_message(
-        "11YN20240101    120000AOAM|AACARD-1|ABITEM1|", organization=org
+        "11YN20240101    120000AOAM|AACARD-1|ABITEM1|", organization=org, session=session
     )
     assert resp.startswith("121")  # ok flag 1
     assert "ABITEM1" in resp
@@ -131,7 +153,9 @@ def test_sip2_checkout_and_checkin():
     assert copy.status == CopyStatus.LOANED
 
     # 09 Checkin.
-    resp = sip2.handle_message("09N20240101    120000AOAM|ABITEM1|", organization=org)
+    resp = sip2.handle_message(
+        "09N20240101    120000AOAM|ABITEM1|", organization=org, session=session
+    )
     assert resp.startswith("101")
     copy.refresh_from_db()
     assert copy.status == CopyStatus.AVAILABLE
@@ -140,7 +164,11 @@ def test_sip2_checkout_and_checkin():
 def test_sip2_patron_status_and_unknown():
     org, branch, work, edition, copy = make_catalog()
     make_patron(org, branch, 1, "CARD-1")
-    resp = sip2.handle_message("23000AOAM|AACARD-1|", organization=org)
+    # Unauthenticated status is denied.
+    denied = sip2.handle_message("23000AOAM|AACARD-1|", organization=org, session={})
+    assert "Login required" in denied
+    session = _sip2_session(org)
+    resp = sip2.handle_message("23000AOAM|AACARD-1|", organization=org, session=session)
     assert resp.startswith("24")
     assert "AACARD-1" in resp
     # Unknown command -> resend.
@@ -150,7 +178,10 @@ def test_sip2_patron_status_and_unknown():
 def test_sip2_checkout_unknown_item_fails():
     org, branch, work, edition, copy = make_catalog()
     make_patron(org, branch, 1, "CARD-1")
-    resp = sip2.handle_message("11YN...AOAM|AACARD-1|ABNOPE|", organization=org)
+    session = _sip2_session(org)
+    resp = sip2.handle_message(
+        "11YN...AOAM|AACARD-1|ABNOPE|", organization=org, session=session
+    )
     assert resp.startswith("120")  # not ok
 
 

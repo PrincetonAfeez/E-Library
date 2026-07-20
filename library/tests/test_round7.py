@@ -53,9 +53,11 @@ def test_checkout_charges_card_once(monkeypatch):
     calls = []
     real_charge = billing.SimulatedGateway.charge
 
-    def counting_charge(self, method, amount_cents):
+    def counting_charge(self, method, amount_cents, *, idempotency_key="", customer_id=""):
         calls.append(amount_cents)
-        return real_charge(self, method, amount_cents)
+        return real_charge(
+            self, method, amount_cents, idempotency_key=idempotency_key, customer_id=customer_id
+        )
 
     monkeypatch.setattr(billing.SimulatedGateway, "charge", counting_charge)
     session = billing.create_checkout(organization=org, plan=pro)
@@ -219,7 +221,8 @@ def test_mfa_enforced_when_org_requires(client):
         secure=True,
     )
     assert ok.status_code == 302
-    assert client.session.get("mfa_verified") is True
+    assert isinstance(client.session.get("mfa_verified"), dict)
+    assert client.session["mfa_verified"]["user_id"] == user.pk
 
 
 # --------------------------------------------------------------------------- #
@@ -232,5 +235,5 @@ def test_totp_secret_encrypted_at_rest():
 
     stored = StaffTotpDevice.objects.get(user=user).secret
     assert stored != info["secret"]  # not plaintext
-    assert stored.startswith("enc1:")
+    assert stored.startswith("enc2:")
     assert mfa.decrypt_secret(stored) == info["secret"]  # round-trips

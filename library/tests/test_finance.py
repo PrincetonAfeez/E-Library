@@ -3,7 +3,7 @@
 import pytest
 from django.contrib.auth import get_user_model
 
-from library import acquisitions, finance
+from library import acquisitions, billing, finance
 from library.models import (
     Branch,
     Edition,
@@ -70,6 +70,7 @@ def test_refund_rejects_over_amount():
 def test_payment_plan_installments_complete():
     org, branch, patron = make_patron()
     make_fee(org, patron, 1000)
+    billing.add_payment_method(organization=org, purpose="fines")
     plan = finance.create_payment_plan(patron=patron, total_cents=1000, installments=2)
     assert plan.installment_cents == 500
 

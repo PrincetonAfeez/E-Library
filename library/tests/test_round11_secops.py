@@ -45,16 +45,25 @@ def _connection(org, **overrides):
 # against a simulated IdP (previously only the injected stubs were covered).
 # --------------------------------------------------------------------------- #
 def test_oidc_real_network_path_against_mock_idp(monkeypatch):
+    from library.models import Branch
+
     org = Organization.objects.create(name="Lib", slug="lib")
+    Branch.objects.create(organization=org, name="Main", slug="main")
     conn = _connection(org)
 
-    def fake_urlopen(req, timeout=None):
-        url = getattr(req, "full_url", req)
+    def fake_safe_urlopen(url, *, data=None, headers=None, method="GET", timeout=8):
         if "token" in url:
             return _Resp({"access_token": "AT", "token_type": "Bearer"})
-        return _Resp({"sub": "idp-xyz", "email": "sso@x.test", "given_name": "Ada"})
+        return _Resp(
+            {
+                "sub": "idp-xyz",
+                "email": "sso@x.test",
+                "email_verified": True,
+                "given_name": "Ada",
+            }
+        )
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("library.sso.safe_urlopen", fake_safe_urlopen)
     # No exchange/fetch stubs -> the real IdP-facing functions run.
     user = sso.handle_callback(conn, code="code123", redirect_uri="https://app/cb")
     assert user.email == "sso@x.test"
@@ -64,7 +73,10 @@ def test_oidc_real_network_path_against_mock_idp(monkeypatch):
 def test_oidc_missing_access_token_errors(monkeypatch):
     org = Organization.objects.create(name="Lib", slug="lib")
     conn = _connection(org)
-    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: _Resp({}))
+    monkeypatch.setattr(
+        "library.sso.safe_urlopen",
+        lambda url, **kwargs: _Resp({}),
+    )
     with pytest.raises(DomainError):
         sso.handle_callback(conn, code="c", redirect_uri="https://app/cb")
 
@@ -79,9 +91,19 @@ def test_oidc_rejects_non_http_idp_url():
 # --------------------------------------------------------------------------- #
 # Outbound URL validation (SSRF scheme guard)
 # --------------------------------------------------------------------------- #
-def test_validate_outbound_url():
+def test_validate_outbound_url(settings):
+    # Clear the test-only loopback allowlist so private-IP blocking is exercised.
+    settings.OUTBOUND_URL_ALLOW_HOSTS = []
     assert validate_outbound_url("https://example.test/hook") == "https://example.test/hook"
-    for bad in ("file:///etc/passwd", "gopher://x", "ftp://x/y", "data:text/plain,hi"):
+    for bad in (
+        "file:///etc/passwd",
+        "gopher://x",
+        "ftp://x/y",
+        "data:text/plain,hi",
+        "http://127.0.0.1/x",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://localhost/admin",
+    ):
         with pytest.raises(UnsafeUrlError):
             validate_outbound_url(bad)
 

@@ -101,6 +101,7 @@ def test_signup_rejects_duplicate_slug(client):
 def test_subscribe_records_invoice():
     pro = make_plans()
     org = Organization.objects.create(name="Lib", slug="lib")
+    billing.add_payment_method(organization=org, last4="4242")
     billing.subscribe(organization=org, plan=pro)
     sub = Subscription.objects.get(organization=org)
     assert sub.status == SubscriptionStatus.ACTIVE
@@ -117,6 +118,7 @@ def test_change_plan_downgrade_guard():
     edition = Edition.objects.create(work=work, isbn_13="9780000000001")
     Copy.objects.create(organization=org, edition=edition, branch=branch, barcode="A")
     Copy.objects.create(organization=org, edition=edition, branch=branch, barcode="B")
+    billing.add_payment_method(organization=org, last4="4242")
     sub = billing.subscribe(organization=org, plan=pro)
     # 2 copies > small.max_copies (1) -> downgrade must be refused.
     with pytest.raises(billing.BillingError):
@@ -126,6 +128,7 @@ def test_change_plan_downgrade_guard():
 def test_cancel_subscription():
     pro = make_plans()
     org = Organization.objects.create(name="Lib", slug="lib")
+    billing.add_payment_method(organization=org, last4="4242")
     sub = billing.subscribe(organization=org, plan=pro)
     billing.cancel_subscription(subscription=sub)
     sub.refresh_from_db()
@@ -135,9 +138,11 @@ def test_cancel_subscription():
 def test_webhook_event_sets_past_due():
     pro = make_plans()
     org = Organization.objects.create(name="Lib", slug="lib")
+    billing.add_payment_method(organization=org, last4="4242")
     sub = billing.subscribe(organization=org, plan=pro)
     handled = billing.handle_gateway_event(
         {
+            "id": "evt_onboarding_failed",
             "type": "invoice.payment_failed",
             "data": {"object": {"subscription": sub.external_subscription_id}},
         }
@@ -184,11 +189,22 @@ def test_billing_api_overview_and_change_plan():
     assert resp.json()["data"]["plan"] == "pro"
 
 
-def test_webhook_endpoint_public():
+def test_webhook_endpoint_requires_secret_outside_debug(settings):
+    settings.DEBUG = False
+    settings.STRIPE_WEBHOOK_SECRET = ""
     client = APIClient()
     resp = client.post(
         "/api/v1/billing/webhook/stripe/", {"type": "noop.event"}, format="json", secure=True
     )
-    # No signature configured -> accepted; unknown event simply not handled.
+    assert resp.status_code == 503
+
+
+def test_webhook_endpoint_debug_allows_unsigned(settings):
+    settings.DEBUG = True
+    settings.STRIPE_WEBHOOK_SECRET = ""
+    client = APIClient()
+    resp = client.post(
+        "/api/v1/billing/webhook/stripe/", {"type": "noop.event"}, format="json", secure=True
+    )
     assert resp.status_code == 200
     assert resp.json()["handled"] is False

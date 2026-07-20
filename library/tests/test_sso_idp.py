@@ -13,7 +13,7 @@ import threading
 import pytest
 
 from library import sso
-from library.models import Organization, SsoConnection, SsoIdentity
+from library.models import Branch, Organization, SsoConnection, SsoIdentity
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -33,10 +33,19 @@ class _IdPHandler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):  # OIDC token endpoint
         length = int(self.headers.get("Content-Length", 0) or 0)
         self.rfile.read(length)
-        self._json({"access_token": "AT-real", "token_type": "Bearer", "id_token": "jwt"})
+        # Omit id_token — claim validation is covered separately; userinfo drives linking.
+        self._json({"access_token": "AT-real", "token_type": "Bearer"})
 
     def do_GET(self):  # OIDC userinfo endpoint
-        self._json({"sub": "idp-777", "email": "real@idp.test", "given_name": "Real", "family_name": "User"})
+        self._json(
+            {
+                "sub": "idp-777",
+                "email": "real@idp.test",
+                "email_verified": True,
+                "given_name": "Real",
+                "family_name": "User",
+            }
+        )
 
 
 @pytest.fixture
@@ -54,6 +63,7 @@ def local_idp():
 
 def test_oidc_end_to_end_against_local_idp(local_idp):
     org = Organization.objects.create(name="Lib", slug="lib")
+    Branch.objects.create(organization=org, name="Main", slug="main")
     conn = SsoConnection.objects.create(
         organization=org,
         client_id="cid",

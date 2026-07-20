@@ -150,13 +150,19 @@ def test_build_authorize_url():
 
 def test_handle_callback_creates_and_links():
     org = Organization.objects.create(name="Lib", slug="lib")
+    Branch.objects.create(organization=org, name="Main", slug="main")
     conn = _connection(org)
 
     def fake_exchange(connection, code, redirect_uri):
         return {"access_token": "tok"}
 
     def fake_userinfo(connection, access_token):
-        return {"sub": "idp-123", "email": "sso@example.test", "given_name": "Ada"}
+        return {
+            "sub": "idp-123",
+            "email": "sso@example.test",
+            "email_verified": True,
+            "given_name": "Ada",
+        }
 
     user = sso.handle_callback(
         conn, code="c", redirect_uri="https://app/cb", exchange=fake_exchange, fetch_userinfo=fake_userinfo
@@ -176,6 +182,56 @@ def test_handle_callback_links_existing_email():
     org = Organization.objects.create(name="Lib", slug="lib")
     conn = _connection(org)
     existing = get_user_model().objects.create_user(username="existing", email="dup@example.test")
+    branch = Branch.objects.create(organization=org, name="Main", slug="main")
+    PatronProfile.objects.create(
+        user=existing, organization=org, library_card_number="EXISTING", home_branch=branch
+    )
+
+    user = sso.handle_callback(
+        conn,
+        code="c",
+        redirect_uri="https://app/cb",
+        exchange=lambda *a: {"access_token": "t"},
+        fetch_userinfo=lambda *a: {
+            "sub": "s1",
+            "email": "dup@example.test",
+            "email_verified": True,
+        },
+    )
+    assert user.pk == existing.pk
+
+
+def test_handle_callback_does_not_link_global_email_without_membership():
+    org = Organization.objects.create(name="Lib", slug="lib")
+    Branch.objects.create(organization=org, name="Main", slug="main")
+    conn = _connection(org)
+    existing = get_user_model().objects.create_user(username="existing", email="dup@example.test")
+
+    user = sso.handle_callback(
+        conn,
+        code="c",
+        redirect_uri="https://app/cb",
+        exchange=lambda *a: {"access_token": "t"},
+        fetch_userinfo=lambda *a: {
+            "sub": "global-email",
+            "email": "dup@example.test",
+            "email_verified": True,
+        },
+    )
+
+    assert user.pk != existing.pk
+    # Email stays on the original account; new SSO user is created without it.
+    existing.refresh_from_db()
+    assert existing.email == "dup@example.test"
+    assert user.email == ""
+    assert SsoIdentity.objects.filter(connection=conn, user=user, subject="global-email").exists()
+
+
+def test_handle_callback_rejects_unverified_email_link():
+    org = Organization.objects.create(name="Lib", slug="lib")
+    Branch.objects.create(organization=org, name="Main", slug="main")
+    conn = _connection(org)
+    existing = get_user_model().objects.create_user(username="existing", email="dup@example.test")
 
     user = sso.handle_callback(
         conn,
@@ -184,7 +240,8 @@ def test_handle_callback_links_existing_email():
         exchange=lambda *a: {"access_token": "t"},
         fetch_userinfo=lambda *a: {"sub": "s1", "email": "dup@example.test"},
     )
-    assert user.pk == existing.pk
+    # Unverified email must not take over the existing account.
+    assert user.pk != existing.pk
 
 
 def test_sso_login_redirects_to_idp(client):

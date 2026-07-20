@@ -95,13 +95,13 @@ def test_feature_flag_gate():
     assert entitlements.has_feature(org, "imports") is False
 
 
-def test_canceled_subscription_is_unrestricted_fallback():
-    # A non-serviceable subscription falls back to unlimited (don't lock a lapsed
-    # tenant out of their own data at the entitlement layer).
+def test_canceled_subscription_is_restricted():
+    # Non-serviceable subscriptions must not fall through to "unlimited".
     org = Organization.objects.create(name="Lib", slug="lib")
-    plan = Plan.objects.create(slug="tiny", name="Tiny", max_patrons=0)
+    plan = Plan.objects.create(slug="tiny", name="Tiny", max_patrons=10, features=["catalog"])
     Subscription.objects.create(organization=org, plan=plan, status=SubscriptionStatus.CANCELED)
-    assert entitlements.remaining(org, "patrons") is None
+    assert entitlements.remaining(org, "patrons") == 0
+    assert entitlements.has_feature(org, "catalog") is False
 
 
 # --------------------------------------------------------------------------- #
@@ -206,7 +206,10 @@ def test_assess_overdue_fines_sweep():
 # API
 # --------------------------------------------------------------------------- #
 def test_patron_fees_and_payment_api():
+    from library import billing
+
     org, branch, work, copy, patron = make_catalog()
+    billing.add_payment_method(organization=org, last4="4242", purpose="fines")
     Fee.objects.create(
         organization=org, patron=patron, fee_type=FeeType.MANUAL, amount_cents=300
     )
