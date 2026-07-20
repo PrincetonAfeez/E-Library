@@ -2,6 +2,7 @@
 from pathlib import Path
 
 import environ
+from django.core.exceptions import ImproperlyConfigured
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -120,6 +121,18 @@ STORAGES = {
     },
 }
 
+# Optional S3-compatible object storage for media (django-storages). When the
+# bucket env is unset, local FileSystemStorage remains the default.
+AWS_STORAGE_BUCKET_NAME = env("AWS_STORAGE_BUCKET_NAME", default="")
+if AWS_STORAGE_BUCKET_NAME:
+    STORAGES["default"] = {
+        "BACKEND": "storages.backends.s3boto3.S3Boto3Storage",
+    }
+    AWS_S3_REGION_NAME = env("AWS_S3_REGION_NAME", default="")
+    AWS_S3_ENDPOINT_URL = env("AWS_S3_ENDPOINT_URL", default="") or None
+    AWS_DEFAULT_ACL = None
+    AWS_QUERYSTRING_AUTH = True
+
 MEDIA_URL = "media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
@@ -163,8 +176,23 @@ REST_FRAMEWORK = {
 SPECTACULAR_SETTINGS = {
     "TITLE": "E-Library API",
     "DESCRIPTION": "Catalog discovery, circulation, and librarian operations.",
-    "VERSION": "1.0.0",
+    "VERSION": "0.1.0",
 }
+
+# When True, organizations without a serviceable subscription cannot use gated
+# features / have zero remaining caps (hosted SaaS posture).
+SAAS_MODE = env.bool("SAAS_MODE", default=False)
+if not DEBUG and SECRET_KEY == "insecure-dev-key-change-me":
+    raise ImproperlyConfigured("Set a non-default SECRET_KEY when DEBUG is False.")
+if SAAS_MODE and SECRET_KEY == "insecure-dev-key-change-me":
+    raise ImproperlyConfigured("SAAS_MODE requires a non-default SECRET_KEY.")
+
+# Optional dedicated Fernet key for secrets at rest; falls back to SECRET_KEY.
+FIELD_ENCRYPTION_KEY = env("FIELD_ENCRYPTION_KEY", default="")
+DISALLOW_PLAINTEXT_SECRETS = env.bool("DISALLOW_PLAINTEXT_SECRETS", default=not DEBUG)
+
+# AI provider key (only "local" ships).
+AI_PROVIDER = env("AI_PROVIDER", default="local")
 
 # Number of trusted reverse proxies in front of the app. Controls how the rate
 # limiter derives the client IP from X-Forwarded-For (0 = use REMOTE_ADDR only).
