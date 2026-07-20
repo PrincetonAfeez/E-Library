@@ -22,16 +22,24 @@ class Command(BaseCommand):
         org = Organization.objects.filter(slug=options["org"]).first()
         if org is None:
             raise CommandError(f"Organization '{options['org']}' not found.")
+        if not org.sip2_login_user or not org.sip2_login_password:
+            raise CommandError(
+                f"Organization '{org.slug}' has no SIP2 credentials; "
+                "set sip2_login_user and sip2_login_password before starting."
+            )
 
         organization = org
 
         class SIP2Handler(socketserver.StreamRequestHandler):
             def handle(self):
+                session: dict = {}
                 for line in self.rfile:
                     text = line.decode("utf-8", "replace").strip()
                     if not text:
                         continue
-                    response = handle_message(text, organization=organization)
+                    response = handle_message(
+                        text, organization=organization, session=session
+                    )
                     self.wfile.write((response + "\r").encode("utf-8"))
 
         server = socketserver.ThreadingTCPServer((options["host"], options["port"]), SIP2Handler)
