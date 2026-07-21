@@ -1,5 +1,5 @@
 """Financial depth: refunds, payment plans, fine amnesty, GL export, encumbrance.
-
+ 
 Builds on the existing fees/payments layer in :mod:`library.services`. Fund
 encumbrance (committing budget when an order is placed, converting it to spend
 on receipt) is applied in :mod:`library.acquisitions`.
@@ -26,6 +26,7 @@ from .services import (
     DomainError,
     audit_action,
     emit_domain_event,
+    patron_balance_cents,
     record_payment,
     waive_fee,
 )
@@ -45,18 +46,40 @@ def _refunded_so_far(payment: Payment) -> int:
 
 def refund_payment(*, payment: Payment, amount_cents=None, actor=None, reason="") -> Payment:
     """Reverse (part of) a payment, re-opening the fees it had paid down."""
+    from . import billing
+
     if payment.kind == "refund":
         raise DomainError("A refund cannot itself be refunded.")
     with transaction.atomic():
         # Lock the payment row so concurrent refunds can't each pass the cap.
         payment = Payment.objects.select_for_update().get(pk=payment.pk)
-        already = _refunded_so_far(payment)
-        refundable = payment.amount_cents - already
+        allocations = (
+            PaymentAllocation.objects.select_for_update()
+            .filter(payment=payment)
+            .select_related("fee")
+            .order_by("-pk")
+        )
+        allocations = list(allocations)
+        reversible = sum(
+            allocation.remaining_cents
+            for allocation in allocations
+            if allocation.fee.status != FeeStatus.WAIVED
+        )
+        allocated = sum(allocation.amount_cents for allocation in allocations)
+        unallocated = max(0, payment.amount_cents - allocated)
+        # A prior refund can consume either allocated or unapplied value, but
+        # never permit total refunds above the original payment.
+        refundable = min(
+            reversible + unallocated,
+            max(0, payment.amount_cents - _refunded_so_far(payment)),
+        )
         amount = refundable if amount_cents is None else int(amount_cents)
         if amount <= 0 or amount > refundable:
             raise DomainError(
                 f"Invalid refund amount (at most {refundable}c refundable on this payment)."
             )
+        # Write the ledger row before contacting the gateway.  This prevents a
+        # successful external refund from existing without an internal record.
         refund = Payment.objects.create(
             organization=payment.organization,
             patron=payment.patron,
@@ -64,18 +87,21 @@ def refund_payment(*, payment: Payment, amount_cents=None, actor=None, reason=""
             method="refund",
             kind="refund",
             reference=f"refund of payment #{payment.pk}",
+            gateway_refund_id="",
             actor=actor,
         )
+        if payment.method == "online" and payment.gateway_charge_id:
+            try:
+                gateway_refund_id = billing.get_gateway().refund(payment.gateway_charge_id, amount) or ""
+            except billing.BillingError as exc:
+                refund.delete()
+                raise DomainError(str(exc)) from exc
+            refund.gateway_refund_id = gateway_refund_id
+            refund.save(update_fields=["gateway_refund_id", "updated_at"])
         # Reverse exactly the fees THIS payment paid, using its allocations.
         # A fee that has since been WAIVED is skipped — don't hand back cash for
         # a charge that was already forgiven.
         remaining = amount
-        allocations = (
-            PaymentAllocation.objects.select_for_update()
-            .filter(payment=payment)
-            .select_related("fee")
-            .order_by("-pk")
-        )
         for allocation in allocations:
             if remaining <= 0:
                 break
@@ -109,6 +135,11 @@ def refund_payment(*, payment: Payment, amount_cents=None, actor=None, reason=""
 def create_payment_plan(*, patron, total_cents, installments, actor=None) -> PaymentPlan:
     if total_cents <= 0 or installments < 1:
         raise DomainError("A payment plan needs a positive total and at least one installment.")
+    balance = patron_balance_cents(patron)
+    if balance <= 0:
+        raise DomainError("This patron has no outstanding balance.")
+    if total_cents > balance:
+        raise DomainError("A payment plan cannot exceed the outstanding balance.")
     plan = PaymentPlan.objects.create(
         organization=patron.organization,
         patron=patron,
@@ -119,7 +150,9 @@ def create_payment_plan(*, patron, total_cents, installments, actor=None) -> Pay
     return plan
 
 
-def pay_installment(*, plan: PaymentPlan, amount_cents=None, method="online", actor=None) -> Payment:
+def pay_installment(
+    *, plan: PaymentPlan, amount_cents=None, method="online", actor=None
+) -> Payment:
     """Pay one installment (or a custom amount), allocating it to outstanding fees."""
     with transaction.atomic():
         plan = PaymentPlan.objects.select_for_update().get(pk=plan.pk)
@@ -129,10 +162,40 @@ def pay_installment(*, plan: PaymentPlan, amount_cents=None, method="online", ac
         amount = min(plan.remaining_cents, max(0, want))
         if amount <= 0:
             raise DomainError("Nothing left to pay on this plan.")
-        payment = record_payment(
-            patron=plan.patron, amount_cents=amount, method=method,
-            reference=f"plan #{plan.pk}", actor=actor,
-        )
+        method = (method or "cash").strip().lower()
+        if method == "online":
+            from . import billing
+
+            try:
+                charge_result = billing.charge_online_amount(
+                    organization=plan.organization,
+                    amount_cents=amount,
+                    idempotency_key=f"plan_pay:{plan.pk}:{amount}:{plan.remaining_cents}",
+                )
+                ok, charge_id = (
+                    charge_result if isinstance(charge_result, tuple) else (charge_result, "")
+                )
+                if not ok:
+                    raise DomainError("Card was declined.")
+            except billing.BillingError as exc:
+                raise DomainError(str(exc)) from exc
+            payment = record_payment(
+                patron=plan.patron,
+                amount_cents=amount,
+                method="online",
+                reference=f"plan #{plan.pk}",
+                actor=actor,
+                captured=True,
+                gateway_charge_id=charge_id,
+            )
+        else:
+            payment = record_payment(
+                patron=plan.patron,
+                amount_cents=amount,
+                method=method,
+                reference=f"plan #{plan.pk}",
+                actor=actor,
+            )
         plan.paid_cents += amount
         if plan.paid_cents >= plan.total_cents:
             plan.status = PaymentPlanStatus.COMPLETED
