@@ -1,13 +1,15 @@
-"""Request middleware for staff MFA enforcement.
+"""Request middleware for staff MFA enforcement
 
-When a tenant sets ``Organization.require_staff_mfa``, staff who have a confirmed
-TOTP device must pass a second factor (recorded in the session) before reaching
-staff areas. Default-off, so tenants that don't opt in are unaffected.
+When a tenant sets ``Organization.require_staff_mfa``, staff must enroll and
+pass a second factor before reaching staff areas. Session users record
+verification in the session; Bearer tokens must carry an ``mfa:verified``
+(or ``*``) scope — session MFA does not cover API tokens.
 """
 
 from __future__ import annotations
 
 import uuid
+from urllib.parse import quote
 
 from django.http import JsonResponse
 from django.shortcuts import redirect
@@ -32,10 +34,16 @@ class RequestIDMiddleware:
         response["X-Request-ID"] = rid
         return response
 
-# Staff-area path prefixes gated behind the second factor.
-_PROTECTED_PREFIXES = ("/librarian", "/billing", "/api/v1/librarian")
-# Never gate these (the challenge itself, MFA endpoints, auth, health).
-_EXEMPT_PREFIXES = ("/mfa/", "/api/v1/account/mfa/", "/accounts/", "/healthz", "/readyz", "/status")
+
+_PROTECTED_PREFIXES = ("/librarian", "/billing", "/api/v1/librarian", "/api/v1/support")
+_EXEMPT_PREFIXES = (
+    "/mfa/",
+    "/api/v1/account/mfa/",
+    "/accounts/",
+    "/healthz",
+    "/readyz",
+    "/status",
+)
 
 
 class StaffMfaMiddleware:
@@ -46,6 +54,13 @@ class StaffMfaMiddleware:
         blocked = self._challenge_if_needed(request)
         return blocked if blocked is not None else self.get_response(request)
 
+    def _token_mfa_ok(self, request) -> bool:
+        """Bearer tokens opt into MFA-equivalent access via scope."""
+        if getattr(request, "auth", None) is None:
+            return False
+        scopes = getattr(request, "auth_scopes", None) or []
+        return "*" in scopes or "mfa:verified" in scopes
+
     def _challenge_if_needed(self, request):
         user = getattr(request, "user", None)
         if not user or not user.is_authenticated:
@@ -53,28 +68,64 @@ class StaffMfaMiddleware:
         path = request.path
         if path.startswith(_EXEMPT_PREFIXES) or not path.startswith(_PROTECTED_PREFIXES):
             return None
-        if request.session.get("mfa_verified"):
-            return None
 
         from . import mfa
-        from .permissions import resolve_request_organization, user_is_staff_for_org
+        from .permissions import resolve_staff_request_organization, user_is_staff_for_org
 
-        # Resolve the org actually being accessed (honours ?org=), so a staffer
-        # of multiple tenants can't reach an MFA-required org via a non-required
-        # "primary" org.
-        organization = resolve_request_organization(request)
-        if organization is None or not organization.require_staff_mfa:
+        organization = resolve_staff_request_organization(request)
+        if (
+            organization is None
+            or not organization.require_staff_mfa
+            or not user_is_staff_for_org(user, organization)
+        ):
+            # A staff+patron user's selected session organization may be their
+            # patron tenant. Protected staff routes must still enforce MFA for
+            # any active staff tenant that requires it.
+            membership = (
+                user.staff_memberships.filter(
+                    active=True, organization__active=True, organization__require_staff_mfa=True
+                )
+                .select_related("organization")
+                .order_by("organization__name", "pk")
+                .first()
+            )
+            if membership is None:
+                return None
+            organization = membership.organization
+
+        if self._token_mfa_ok(request):
             return None
-        if not user_is_staff_for_org(user, organization):
+        if mfa.session_mfa_ok(request, organization=organization):
             return None
+
+        # Token auth without mfa:verified cannot use the HTML challenge flow.
+        if getattr(request, "auth", None) is not None:
+            return JsonResponse(
+                {
+                    "error": {
+                        "code": "mfa_required",
+                        "message": "API token requires mfa:verified (or *) scope for this organization.",
+                    }
+                },
+                status=403,
+            )
+
         if not mfa.user_has_mfa(user):
-            # Org requires MFA but this user hasn't enrolled — enforcement of
-            # enrollment is handled out of band; don't lock them out here.
-            return None
+            if path.startswith("/api/"):
+                return JsonResponse(
+                    {
+                        "error": {
+                            "code": "mfa_enrollment_required",
+                            "message": "Enroll MFA before accessing staff areas.",
+                        }
+                    },
+                    status=403,
+                )
+            return redirect(f"/mfa/enroll/?next={quote(path)}")
 
         if path.startswith("/api/"):
             return JsonResponse(
                 {"error": {"code": "mfa_required", "message": "Second factor required."}},
                 status=403,
             )
-        return redirect(f"/mfa/challenge/?next={path}")
+        return redirect(f"/mfa/challenge/?next={quote(path)}")
