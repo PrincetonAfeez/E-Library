@@ -1,4 +1,4 @@
-"""Delivery of patron-facing notifications triggered by outbox events.
+"""Delivery of patron-facing notifications triggered by outbox events
 
 ``process_outbox_event`` in :mod:`library.services` hands each drained
 ``OutboxEvent`` to :func:`deliver`.  We resolve the originating aggregate from
@@ -274,15 +274,35 @@ def deliver(event) -> None:
             ).first()
             subject = _render(template.subject if template else default_subject, context)
             body = _render(template.body if template else default_body, context)
-            # CAN-SPAM: give suppressible notices a one-click unsubscribe.
+            # CAN-SPAM / RFC 8058: body link + List-Unsubscribe headers.
+            headers = None
             if category not in ESSENTIAL_CATEGORIES and patron is not None:
-                body = f"{body}\n\nTo stop these emails, visit {unsubscribe_url(patron)}"
+                unsub = unsubscribe_url(patron)
+                body = f"{body}\n\nTo stop these emails, visit {unsub}"
+                headers = {
+                    "List-Unsubscribe": f"<{unsub}>",
+                    "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+                }
+            else:
+                headers = None
+        else:
+            headers = None
         _deliver_to_channel(
-            event, domain_event, channel, recipient, subject, body, template_key, related_entity
+            event,
+            domain_event,
+            channel,
+            recipient,
+            subject,
+            body,
+            template_key,
+            related_entity,
+            headers=headers if channel_key == "email" else None,
         )
 
 
-def _deliver_to_channel(event, domain_event, channel, recipient, subject, body, template_key, related_entity):
+def _deliver_to_channel(
+    event, domain_event, channel, recipient, subject, body, template_key, related_entity, headers=None
+):
     # Per (event, channel) idempotency: claim a delivery row before sending so a
     # duplicate attempt collides on the unique constraint instead of re-sending.
     provider_reference = f"{domain_event.pk}:{channel.key}"
@@ -303,7 +323,10 @@ def _deliver_to_channel(event, domain_event, channel, recipient, subject, body, 
             return
         delivery.attempts += 1
     try:
-        channel.send(recipient, subject, body)
+        if headers and channel.key == "email":
+            channel.send(recipient, subject, body, headers=headers)
+        else:
+            channel.send(recipient, subject, body)
     except Exception as exc:
         delivery.status = "failed"
         delivery.failed_at = timezone.now()
