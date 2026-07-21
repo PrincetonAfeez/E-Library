@@ -128,11 +128,21 @@ class LocalProvider:
 
 def get_provider():
     """Return the configured AI provider (local by default)."""
-    configured = getattr(settings, "AI_PROVIDER", "") or "local"
-    # Only the local provider ships; a hook point for a real LLM provider.
-    if configured != "local":  # pragma: no cover - external provider not bundled
-        pass
-    return LocalProvider()
+    import logging
+
+    configured = (getattr(settings, "AI_PROVIDER", "") or "local").strip().lower()
+    if configured == "local":
+        return LocalProvider()
+    # No non-local provider ships yet — fail loud in production, fall back in DEBUG.
+    if getattr(settings, "DEBUG", False):
+        logging.getLogger("library").warning(
+            "AI_PROVIDER=%r is not implemented; using LocalProvider.", configured
+        )
+        return LocalProvider()
+    raise RuntimeError(
+        f"AI_PROVIDER={configured!r} is not implemented. Set AI_PROVIDER=local "
+        "or install a supported provider adapter."
+    )
 
 
 # Convenience module-level wrappers.
