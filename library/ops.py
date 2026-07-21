@@ -1,5 +1,5 @@
 """Operational helpers for scheduled jobs: single-runner locking + DLQ alerting."""
-
+ 
 from __future__ import annotations
 
 import contextlib
