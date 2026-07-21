@@ -1,4 +1,4 @@
-"""Structured logging with request correlation.
+"""Structured logging with request correlation
 
 A per-request id (from an inbound ``X-Request-ID`` header or generated) is stored
 in a context variable, injected into every log record by ``RequestIDFilter``, and
