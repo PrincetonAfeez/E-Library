@@ -1,12 +1,25 @@
 """Django signals that keep search documents in sync with catalog changes."""
+
 import contextlib
 import threading
 
-from django.db.models.signals import m2m_changed, post_save
+from django.contrib.auth.signals import user_logged_in
+from django.db.models.signals import m2m_changed, post_save, pre_save
 from django.dispatch import receiver
 
-from .models import Author, Edition, Subject, Work
+from .crypto import encrypt_value
+from .models import Author, Edition, Organization, SsoConnection, Subject, Work
 from .services import rebuild_work_search_document, reindex_author_works
+
+
+@receiver(user_logged_in)
+def set_session_org_on_login(sender, request, user, **kwargs):
+    """Initialize tenant selection for ordinary Django logins."""
+    from .tenancy import organization_for_user, staff_organization_for_user
+
+    org = organization_for_user(user) or staff_organization_for_user(user)
+    if org is not None:
+        request.session["organization_slug"] = org.slug
 
 # Fields whose changes affect a Work's denormalized search document. A save that
 # only touches other fields (via update_fields) can skip the reindex fan-out.
@@ -69,3 +82,25 @@ def subject_saved(sender, instance, update_fields=None, **kwargs):
         return
     for work_id in instance.works.values_list("id", flat=True):
         rebuild_work_search_document(work_id)
+
+
+def _needs_encrypt(value: str) -> bool:
+    return bool(value) and not value.startswith(("enc1:", "enc2:"))
+
+
+@receiver(pre_save, sender=SsoConnection)
+def encrypt_sso_client_secret(sender, instance, **kwargs):
+    if _needs_encrypt(instance.client_secret or ""):
+        instance.client_secret = encrypt_value(instance.client_secret)
+
+
+@receiver(pre_save, sender=Organization)
+def encrypt_sip2_password(sender, instance, **kwargs):
+    if _needs_encrypt(instance.sip2_login_password or ""):
+        instance.sip2_login_password = encrypt_value(instance.sip2_login_password)
+
+
+@receiver(pre_save, sender="library.WebhookEndpoint")
+def encrypt_webhook_secret(sender, instance, **kwargs):
+    if _needs_encrypt(instance.secret or ""):
+        instance.secret = encrypt_value(instance.secret)
