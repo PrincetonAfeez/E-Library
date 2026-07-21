@@ -1,4 +1,4 @@
-"""Staged CSV catalog import: stage -> validate -> commit / rollback.
+"""Staged CSV catalog import: stage -> validate -> commit / rollback
 
 The pipeline mirrors the models already present (``CatalogImportBatch`` /
 ``CatalogImportRow``) and the E-Library spec §8.1:
