@@ -1,5 +1,5 @@
 """Feature flags for safe rollout.
-
+ 
 Resolution order for a key:
 1. A per-organization ``FeatureFlag`` row (tenant override).
 2. A global ``FeatureFlag`` row (organization is null).
