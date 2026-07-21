@@ -1,4 +1,4 @@
-"""Self-contained MARC21 reader/writer (ISO 2709 binary + MARCXML).
+"""Self-contained MARC21 reader/writer (ISO 2709 binary + MARCXML)
 
 No external dependency: libraries exchange bibliographic records as MARC, so we
 parse both the binary ``.mrc`` (ISO 2709) and MARCXML forms into a small
