@@ -13,6 +13,8 @@ from django.db import connection, transaction
 from django.http import Http404, HttpResponse, HttpResponseBadRequest
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
+from django.utils.http import url_has_allowed_host_and_scheme
+from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
 from . import billing, delivery, sso
@@ -64,6 +66,16 @@ from .services import (
 from .tenancy import get_current_organization, staff_organization_for_user
 
 logger = logging.getLogger("library")
+
+
+def _safe_next_url(request, candidate: str | None, default: str = "/librarian/") -> str:
+    """Return ``candidate`` only when it is a same-host relative/absolute URL."""
+    url = (candidate or "").strip() or default
+    if url_has_allowed_host_and_scheme(
+        url, allowed_hosts={request.get_host()}, require_https=request.is_secure()
+    ):
+        return url
+    return default
 
 
 def patron_required(view):
@@ -208,7 +220,11 @@ def erase_my_account(request):
     if request.POST.get("confirm") != "yes":
         messages.error(request, "Type the confirmation to erase your account.")
         return redirect("patron_settings")
-    privacy.erase_patron(patron=request.user.patron_profile, actor=request.user)
+    try:
+        privacy.erase_patron(patron=request.user.patron_profile, actor=request.user)
+    except DomainError as exc:
+        messages.error(request, str(exc))
+        return redirect("patron_settings")
     logout(request)
     messages.success(request, "Your account and personal data have been erased.")
     return redirect("catalog_search")
@@ -291,6 +307,7 @@ def register(request):
                 messages.error(request, str(exc))
             else:
                 login(request, user)
+                request.session["organization_slug"] = chosen_org.slug
                 messages.success(request, "Welcome! Your library account is ready.")
                 return redirect("account")
     else:
@@ -461,7 +478,9 @@ def _resolve_staff_org(request):
     # user isn't routed to their patron org), then the general current org.
     if request.GET.get("org"):
         return get_current_organization(request)
-    return staff_organization_for_user(request.user) or get_current_organization(request)
+    return staff_organization_for_user(
+        request.user, request.session
+    ) or get_current_organization(request)
 
 
 @login_required
@@ -589,10 +608,16 @@ def sso_login(request, org_slug):
     organization = get_object_or_404(Organization, slug=org_slug, active=True)
     connection = get_object_or_404(SsoConnection, organization=organization, enabled=True)
     state = secrets.token_urlsafe(24)
+    nonce = secrets.token_urlsafe(24)
     request.session["sso_state"] = state
+    request.session["sso_nonce"] = nonce
     request.session["sso_org"] = organization.slug
     redirect_uri = request.build_absolute_uri(reverse("sso_callback"))
-    return redirect(sso.build_authorize_url(connection, redirect_uri=redirect_uri, state=state))
+    return redirect(
+        sso.build_authorize_url(
+            connection, redirect_uri=redirect_uri, state=state, nonce=nonce
+        )
+    )
 
 
 def sso_callback(request):
@@ -608,15 +633,23 @@ def sso_callback(request):
     )
     connection = get_object_or_404(SsoConnection, organization=organization, enabled=True)
     redirect_uri = request.build_absolute_uri(reverse("sso_callback"))
+    nonce = request.session.pop("sso_nonce", None)
     try:
         user = sso.handle_callback(
-            connection, code=request.GET.get("code", ""), redirect_uri=redirect_uri
+            connection,
+            code=request.GET.get("code", ""),
+            redirect_uri=redirect_uri,
+            expected_nonce=nonce,
         )
     except DomainError as exc:
         messages.error(request, str(exc))
         return redirect("login")
+    if not user.is_active:
+        messages.error(request, "This account is disabled.")
+        return redirect("login")
     login(request, user)
     request.session["organization_slug"] = organization.slug
+    request.session.pop("mfa_verified", None)
     messages.success(request, "Signed in.")
     return redirect("catalog_search")
 
@@ -704,14 +737,52 @@ def digital_content(request, token):
 def mfa_challenge(request):
     """Second-factor prompt for staff whose org requires MFA."""
     from . import mfa
+    from .permissions import resolve_request_organization, resolve_staff_request_organization
 
-    next_url = request.GET.get("next") or "/librarian/"
+    next_url = _safe_next_url(request, request.GET.get("next"), "/librarian/")
     if request.method == "POST":
         if mfa.verify_login(user=request.user, code=request.POST.get("code", "")):
-            request.session["mfa_verified"] = True
-            return redirect(request.POST.get("next") or next_url)
+            org = resolve_staff_request_organization(request) or resolve_request_organization(request)
+            mfa.mark_session_verified(request, organization=org)
+            return redirect(_safe_next_url(request, request.POST.get("next"), next_url))
         messages.error(request, "That code is incorrect. Try again.")
     return render(request, "mfa/challenge.html", {"next": next_url})
+
+
+@login_required
+def mfa_enroll(request):
+    """Force/allow staff MFA enrollment when the org requires it."""
+    from . import mfa
+    from .permissions import resolve_request_organization, resolve_staff_request_organization
+
+    next_url = _safe_next_url(request, request.GET.get("next"), "/librarian/")
+    info = None
+    if request.method == "POST":
+        action = request.POST.get("action", "begin")
+        try:
+            if action == "begin":
+                info = mfa.begin_enrollment(
+                    user=request.user,
+                    current_code=request.POST.get("current_code") or None,
+                )
+                request.session["mfa_enroll_secret"] = info["secret"]
+                messages.success(request, "Scan the QR / enter the secret, then confirm a code.")
+            elif action == "confirm":
+                mfa.confirm_enrollment(user=request.user, code=request.POST.get("code", ""))
+                org = resolve_staff_request_organization(request) or resolve_request_organization(request)
+                mfa.mark_session_verified(request, organization=org)
+                request.session.pop("mfa_enroll_secret", None)
+                messages.success(request, "MFA enrolled.")
+                return redirect(next_url)
+        except DomainError as exc:
+            messages.error(request, str(exc))
+    secret = request.session.get("mfa_enroll_secret")
+    if secret and info is None:
+        info = {
+            "secret": secret,
+            "otpauth_uri": mfa.provisioning_uri(secret, request.user.get_username()),
+        }
+    return render(request, "mfa/enroll.html", {"next": next_url, "info": info})
 
 
 def terms(request):
@@ -749,23 +820,23 @@ def status_page(request):
     )
 
 
+@csrf_exempt
 def unsubscribe(request, token):
-    """One-click unsubscribe from non-essential notices (CAN-SPAM compliant).
+    """Unsubscribe confirmation page for non-essential notices.
 
-    A GET immediately unsubscribes (email one-click links are GETs) and shows a
-    confirmation with a re-subscribe option; POST toggles back on.
+    GET only renders the page (safe for link scanners). State changes happen on
+    POST (including RFC 8058 one-click via ``List-Unsubscribe-Post``).
     """
     from .models import PatronProfile
 
     patron = get_object_or_404(PatronProfile, unsubscribe_token=token)
-    # State changes only on POST: a GET (link scanners, client prefetch) must
-    # never silently unsubscribe someone (RFC 8058).
     if request.method == "POST":
-        action = request.POST.get("action")
-        if action == "resubscribe":
+        action = request.POST.get("action") or request.POST.get("List-Unsubscribe")
+        # RFC 8058 one-click body is ``List-Unsubscribe=One-Click``.
+        if action in {"resubscribe"}:
             patron.unsubscribed_at = None
             patron.save(update_fields=["unsubscribed_at", "updated_at"])
-        elif action == "unsubscribe" and patron.unsubscribed_at is None:
+        elif action in {"unsubscribe", "One-Click", "one-click"} and patron.unsubscribed_at is None:
             patron.unsubscribed_at = timezone.now()
             patron.save(update_fields=["unsubscribed_at", "updated_at"])
     return render(
