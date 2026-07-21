@@ -1,8 +1,9 @@
-"""Staff multi-factor authentication: self-contained TOTP (RFC 6238).
+"""Staff multi-factor authentication: self-contained TOTP (RFC 6238)
 
 Implemented with the standard library only (hmac/hashlib), so it works offline
 and interoperates with any authenticator app (Google Authenticator, Authy, …)
 via the standard ``otpauth://`` provisioning URI. No third-party OTP dependency.
+Secrets at rest use Fernet via :mod:`library.crypto`.
 """
 
 from __future__ import annotations
@@ -15,46 +16,22 @@ import struct
 import time
 from urllib.parse import quote
 
-from django.conf import settings
 from django.utils import timezone
 
+from .crypto import decrypt_value, encrypt_value
 from .models import StaffTotpDevice
 from .services import DomainError, audit_action
 
 STEP_SECONDS = 30
 DIGITS = 6
-_ENC_PREFIX = "enc1:"
-
-
-# --------------------------------------------------------------------------- #
-# At-rest encryption for the shared secret (SECRET_KEY-derived keystream).
-# Removes plaintext exposure in a DB dump; no third-party dependency.
-# --------------------------------------------------------------------------- #
-def _keystream(nonce: bytes, length: int) -> bytes:
-    key = settings.SECRET_KEY.encode("utf-8")
-    out = bytearray()
-    counter = 0
-    while len(out) < length:
-        out += hashlib.sha256(key + nonce + counter.to_bytes(8, "big")).digest()
-        counter += 1
-    return bytes(out[:length])
 
 
 def encrypt_secret(plaintext: str) -> str:
-    nonce = secrets.token_bytes(12)
-    data = plaintext.encode("utf-8")
-    keystream = _keystream(nonce, len(data))
-    ciphertext = bytes(a ^ b for a, b in zip(data, keystream, strict=True))
-    return _ENC_PREFIX + base64.urlsafe_b64encode(nonce + ciphertext).decode("ascii")
+    return encrypt_value(plaintext)
 
 
 def decrypt_secret(stored: str) -> str:
-    if not stored.startswith(_ENC_PREFIX):
-        return stored  # tolerate a legacy plaintext secret
-    raw = base64.urlsafe_b64decode(stored[len(_ENC_PREFIX):].encode("ascii"))
-    nonce, ciphertext = raw[:12], raw[12:]
-    keystream = _keystream(nonce, len(ciphertext))
-    return bytes(a ^ b for a, b in zip(ciphertext, keystream, strict=True)).decode("utf-8")
+    return decrypt_value(stored, allow_plaintext=False)
 
 
 def generate_secret() -> str:
@@ -90,14 +67,22 @@ def verify_code(secret: str, code: str, *, timestamp: float | None = None, windo
 
 def provisioning_uri(secret: str, account: str, *, issuer: str = "E-Library") -> str:
     label = quote(f"{issuer}:{account}")
-    return f"otpauth://totp/{label}?secret={secret}&issuer={quote(issuer)}&digits={DIGITS}&period={STEP_SECONDS}"
+    return (
+        f"otpauth://totp/{label}?secret={secret}&issuer={quote(issuer)}"
+        f"&digits={DIGITS}&period={STEP_SECONDS}"
+    )
 
 
-# --------------------------------------------------------------------------- #
-# Enrollment / verification service
-# --------------------------------------------------------------------------- #
-def begin_enrollment(*, user) -> dict:
-    """(Re)issue an unconfirmed TOTP secret and return its provisioning URI."""
+def begin_enrollment(*, user, current_code: str | None = None) -> dict:
+    """(Re)issue an unconfirmed TOTP secret and return its provisioning URI.
+
+    If the user already has a confirmed device, ``current_code`` must verify
+    against it (step-up) before the secret is rotated.
+    """
+    existing = StaffTotpDevice.objects.filter(user=user, confirmed_at__isnull=False).first()
+    if existing is not None:
+        if not current_code or not verify_code(decrypt_secret(existing.secret), current_code):
+            raise DomainError("Enter a current MFA code to re-enroll.")
     secret = generate_secret()
     device, _ = StaffTotpDevice.objects.update_or_create(
         user=user, defaults={"secret": encrypt_secret(secret), "confirmed_at": None}
@@ -138,8 +123,50 @@ def verify_login(*, user, code: str) -> bool:
     return False
 
 
-def disable_mfa(*, user, actor=None) -> None:
+def disable_mfa(*, user, code: str, actor=None) -> None:
+    device = StaffTotpDevice.objects.filter(user=user, confirmed_at__isnull=False).first()
+    if device is None:
+        StaffTotpDevice.objects.filter(user=user).delete()
+        return
+    if not verify_code(decrypt_secret(device.secret), code):
+        raise DomainError("Enter a current MFA code to disable MFA.")
     StaffTotpDevice.objects.filter(user=user).delete()
-    audit_action(
-        action="mfa.disable", entity=user, actor=actor or user, source="mfa"
-    )
+    audit_action(action="mfa.disable", entity=user, actor=actor or user, source="mfa")
+
+
+def mark_session_verified(request, *, organization=None) -> None:
+    """Record a bound MFA verification on the session (user + org + time)."""
+    request.session["mfa_verified"] = {
+        "user_id": request.user.pk,
+        "org_id": getattr(organization, "pk", None),
+        "verified_at": timezone.now().isoformat(),
+    }
+
+
+def session_mfa_ok(request, *, organization=None, max_age_seconds: int = 12 * 3600) -> bool:
+    """True when the session carries a fresh, identity-bound MFA verification."""
+    payload = request.session.get("mfa_verified")
+    if not payload:
+        return False
+    if not isinstance(payload, dict):
+        # Legacy boolean flag — treat as invalid so users re-verify.
+        return False
+    user = getattr(request, "user", None)
+    if not user or not user.is_authenticated or payload.get("user_id") != user.pk:
+        return False
+    if organization is not None and payload.get("org_id") != organization.pk:
+        return False
+    verified_at = payload.get("verified_at") or ""
+    try:
+        from django.utils.dateparse import parse_datetime
+
+        when = parse_datetime(verified_at)
+        if when is None:
+            return False
+        if timezone.is_naive(when):
+            when = timezone.make_aware(when, timezone.utc)
+        if (timezone.now() - when).total_seconds() > max_age_seconds:
+            return False
+    except (TypeError, ValueError):
+        return False
+    return True
