@@ -1,5 +1,5 @@
-r"""Consortia & resource sharing: union catalog + inter-library loan (ILL).
-
+"""Consortia & resource sharing: union catalog + inter-library loan (ILL).
+ 
 Members of a :class:`Consortium` can borrow physical copies from one another. A
 borrowed copy stays owned by the lender; the full loan lifecycle lives on the
 :class:`IllRequest` (rather than a cross-tenant ``Loan``), and the lender's copy
