@@ -1,4 +1,4 @@
-"""Resolve effective circulation rules from the (patron_type × material_type) matrix.
+"""Resolve effective circulation rules from the (patron_type × material_type) matrix
 
 Backward compatible: when a tenant has configured no ``CirculationPolicy`` rows
 (and patrons/editions have no type), resolution falls back to the legacy flat
