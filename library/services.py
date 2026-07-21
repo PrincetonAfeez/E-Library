@@ -1,4 +1,5 @@
 """Transactional business logic for circulation, catalog, and notifications."""
+
 from __future__ import annotations
 
 import logging
@@ -221,6 +222,20 @@ def assess_overdue_fine(*, loan: Loan, now=None) -> Fee | None:
     (never lowered below what has already been paid). Returns the fee or None
     when nothing is owed.
     """
+    # Lock the loan before checking/creating its one overdue fee.  The database
+    # constraint remains the final guard when separate workers race.  Lock only
+    # the loan row (of=("self",)) so nullable FKs like patron do not create an
+    # outer join that PostgreSQL rejects under FOR UPDATE.
+    with transaction.atomic():
+        loan = (
+            Loan.objects.select_for_update(of=("self",))
+            .select_related("organization", "patron", "copy__edition", "copy__branch")
+            .get(pk=loan.pk)
+        )
+        return _assess_overdue_fine_locked(loan=loan, now=now)
+
+
+def _assess_overdue_fine_locked(*, loan: Loan, now=None) -> Fee | None:
     now = now or timezone.now()
     if loan.patron_id is None:
         return None
@@ -250,14 +265,19 @@ def assess_overdue_fine(*, loan: Loan, now=None) -> Fee | None:
     if amount <= 0 and existing is None:
         return None
     if existing is None:
-        fee = Fee.objects.create(
-            organization=loan.organization,
-            patron_id=loan.patron_id,
-            loan=loan,
-            fee_type=FeeType.OVERDUE,
-            amount_cents=amount,
-            description="Overdue fine",
-        )
+        try:
+            with transaction.atomic():
+                fee = Fee.objects.create(
+                    organization=loan.organization,
+                    patron_id=loan.patron_id,
+                    loan=loan,
+                    fee_type=FeeType.OVERDUE,
+                    amount_cents=amount,
+                    description="Overdue fine",
+                )
+        except IntegrityError:
+            fee = Fee.objects.get(loan=loan, fee_type=FeeType.OVERDUE)
+            return fee
         audit_action(action="fee.assess", entity=fee, source="scheduler")
         return fee
     # Never reduce below already-paid; keep it monotonic as it accrues.
@@ -299,19 +319,41 @@ def assess_lost_item_fee(*, loan: Loan, actor=None) -> Fee:
     return fee
 
 
+# Methods that may be recorded without a payment-gateway capture (desk/staff).
+_MANUAL_PAYMENT_METHODS = frozenset({"cash", "check", "card_present", "staff", "adjustment"})
+
+
 def record_payment(
-    *, patron: PatronProfile, amount_cents: int, method: str = "online", reference: str = "", actor=None
+    *,
+    patron: PatronProfile,
+    amount_cents: int,
+    method: str = "cash",
+    reference: str = "",
+    actor=None,
+    captured: bool = False,
+    gateway_charge_id: str = "",
 ) -> Payment:
-    """Record a payment and allocate it across outstanding fees oldest-first."""
+    """Record a payment and allocate it across outstanding fees oldest-first.
+
+    Online (gateway) payments must set ``captured=True`` after a successful
+    charge. Desk/manual methods do not require capture.
+    """
     if amount_cents <= 0:
         raise DomainError("Payment amount must be positive.")
+    method = (method or "cash").strip().lower()
+    if method == "online" and not captured:
+        raise DomainError("Online payments must be confirmed by the payment gateway.")
+    if method not in _MANUAL_PAYMENT_METHODS and method != "online":
+        raise DomainError(f"Unsupported payment method: {method}")
     with transaction.atomic():
         payment = Payment.objects.create(
             organization=patron.organization,
             patron=patron,
+            patron_hash=stable_patron_hash(patron),
             amount_cents=amount_cents,
             method=method,
             reference=reference,
+            gateway_charge_id=gateway_charge_id,
             actor=actor,
         )
         remaining = amount_cents
@@ -351,19 +393,25 @@ def record_payment(
 
 
 def waive_fee(*, fee: Fee, actor=None, reason: str = "") -> Fee:
-    if fee.status == FeeStatus.WAIVED:
+    with transaction.atomic():
+        fee = Fee.objects.select_for_update().get(pk=fee.pk)
+        if fee.status == FeeStatus.WAIVED:
+            return fee
+        if fee.paid_cents > 0:
+            raise DomainError("Refund or reverse payments before waiving a partially paid fee.")
+        if fee.status != FeeStatus.OUTSTANDING:
+            raise DomainError("Only outstanding fees can be waived.")
+        fee.status = FeeStatus.WAIVED
+        fee.waived_reason = reason
+        fee.save(update_fields=["status", "waived_reason", "updated_at"])
+        record_librarian_override(
+            organization=fee.organization,
+            actor=actor,
+            reason=reason or "fee waived",
+            entity=fee,
+            after={"waived": True, "amount_cents": fee.amount_cents},
+        )
         return fee
-    fee.status = FeeStatus.WAIVED
-    fee.waived_reason = reason
-    fee.save(update_fields=["status", "waived_reason", "updated_at"])
-    record_librarian_override(
-        organization=fee.organization,
-        actor=actor,
-        reason=reason or "fee waived",
-        entity=fee,
-        after={"waived": True, "amount_cents": fee.amount_cents},
-    )
-    return fee
 
 
 def rebuild_work_search_document(work_id: int) -> WorkSearchDocument:
@@ -481,6 +529,7 @@ def borrow_work(
     actor=None,
     source: str = "web",
     override_reason: str = "",
+    allow_org_fallback: bool = True,
 ) -> Loan:
     """Check a copy out to ``patron``.
 
@@ -555,7 +604,7 @@ def borrow_work(
             if waiting_ahead and not override:
                 raise DomainError("A hold queue exists for this work.")
             copy_qs = available_copies_for_work(organization=organization, work=work, branch=branch)
-            if not copy_qs.exists() and branch is not None:
+            if not copy_qs.exists() and branch is not None and allow_org_fallback:
                 copy_qs = available_copies_for_work(organization=organization, work=work)
             copy = copy_qs.select_for_update(skip_locked=True).first()
             if copy is None:
@@ -891,6 +940,14 @@ def place_hold(
         raise DomainError("A pickup branch is required.")
     if not policies.work_is_holdable(organization=organization, patron=patron, work=work):
         raise DomainError("This material cannot be placed on hold.")
+    holdable_copies = Copy.objects.filter(organization=organization, edition__work=work)
+    excluded_statuses = [status for status in (getattr(CopyStatus, "LOST", None),) if status]
+    if hasattr(CopyStatus, "WITHDRAWN"):
+        excluded_statuses.append(CopyStatus.WITHDRAWN)
+    if excluded_statuses:
+        holdable_copies = holdable_copies.exclude(status__in=excluded_statuses)
+    if not holdable_copies.exists():
+        raise DomainError("No holdable copy exists for this work.")
 
     with transaction.atomic():
         # Lock the patron row so the max-holds check cannot be raced by a
@@ -1017,6 +1074,9 @@ def renew_loan(*, loan: Loan, actor=None, source: str = "web") -> Renewal:
             raise DomainError("Only active or overdue loans can be renewed.")
         if loan.patron is not None:
             assert_patron_can_act(loan.patron)
+        # Serialize with place_hold / borrow on the same work so a concurrent
+        # WAITING hold cannot race past the renewal check.
+        advisory_xact_lock(75, loan.copy.edition.work_id)
         policy = policies.resolve_policy(
             organization=loan.organization,
             patron=loan.patron,
