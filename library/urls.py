@@ -67,6 +67,7 @@ urlpatterns = [
     path("digital/content/<str:token>/", views.digital_content, name="digital_content"),
     path("u/<str:token>/", views.unsubscribe, name="unsubscribe"),
     path("mfa/challenge/", views.mfa_challenge, name="mfa_challenge"),
+    path("mfa/enroll/", views.mfa_enroll, name="mfa_enroll"),
     path("api/v1/account/notifications/", api.NotificationPrefsAPI.as_view(), name="api_notification_prefs"),
     path("api/v1/account/fees/", api.AccountFeesAPI.as_view(), name="api_account_fees"),
     path("api/v1/account/fees/pay/", api.PayFeesAPI.as_view(), name="api_account_pay"),
@@ -137,6 +138,7 @@ urlpatterns = [
     # Analytics + audit (Increment 16)
     path("api/v1/librarian/analytics/<str:report>/", api.AnalyticsAPI.as_view(), name="api_analytics"),
     path("api/v1/librarian/audit/", api.AuditLogAPI.as_view(), name="api_audit"),
+    path("api/v1/support/patrons/", api.SupportPatronLookupAPI.as_view(), name="api_support_patron"),
     # Staff MFA (Increment 17)
     path("api/v1/account/mfa/enroll/", api.MfaEnrollAPI.as_view(), name="api_mfa_enroll"),
     path("api/v1/account/mfa/confirm/", api.MfaConfirmAPI.as_view(), name="api_mfa_confirm"),
