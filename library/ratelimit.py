@@ -1,4 +1,4 @@
-"""Lightweight cache-backed rate limiting for HTML endpoints.
+"""Lightweight cache-backed rate limiting for HTML endpoints
 
 DRF endpoints are throttled by REST framework; these decorators cover the
 server-rendered views (registration, login, search) that DRF does not see.
