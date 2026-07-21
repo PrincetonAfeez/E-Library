@@ -1,5 +1,5 @@
 """Notification delivery channels (email, SMS, push).
-
+ 
 A pluggable abstraction like the billing gateway: email uses Django's mail
 backend; SMS/push use provider SDKs when configured (Twilio / FCM) and
 otherwise a manual backend that records to an in-memory outbox — so the whole
@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 
 from django.conf import settings
-from django.core.mail import send_mail
+from django.core.mail import EmailMessage
 
 logger = logging.getLogger("library")
 
@@ -26,8 +26,9 @@ class EmailChannel:
     def address(self, patron) -> str:
         return patron.notification_email or patron.user.email
 
-    def send(self, to: str, subject: str, body: str) -> None:
-        send_mail(subject, body, None, [to], fail_silently=False)
+    def send(self, to: str, subject: str, body: str, *, headers: dict | None = None) -> None:
+        msg = EmailMessage(subject, body, None, [to], headers=headers or {})
+        msg.send(fail_silently=False)
 
 
 class SmsChannel:
