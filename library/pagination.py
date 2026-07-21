@@ -1,4 +1,5 @@
 """Signed opaque cursor encoding for catalog pagination."""
+
 from django.core import signing
 
 CURSOR_SALT = "elibrary.catalog.cursor"
