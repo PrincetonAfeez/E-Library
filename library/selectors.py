@@ -1,4 +1,5 @@
 """Complex read queries for catalog search, availability, and dashboards."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -346,7 +347,7 @@ def get_patron_holds(patron):
     )
 
 
-def get_librarian_dashboard(organization, branch=None) -> dict:
+def get_librarian_dashboard(organization, branch=None, branch_ids=None) -> dict:
     loan_qs = Loan.objects.filter(organization=organization).select_related(
         "copy", "copy__edition__work", "patron", "copy__branch"
     )
@@ -356,6 +357,9 @@ def get_librarian_dashboard(organization, branch=None) -> dict:
     if branch is not None:
         loan_qs = loan_qs.filter(copy__branch=branch)
         hold_qs = hold_qs.filter(preferred_branch=branch)
+    elif branch_ids is not None:
+        loan_qs = loan_qs.filter(copy__branch_id__in=branch_ids)
+        hold_qs = hold_qs.filter(preferred_branch_id__in=branch_ids)
     return {
         "overdue_loans": loan_qs.filter(status=LoanStatus.OVERDUE).order_by("due_at")[:25],
         "due_today": loan_qs.filter(status=LoanStatus.ACTIVE).order_by("due_at")[:25],
