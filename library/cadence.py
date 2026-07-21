@@ -1,5 +1,5 @@
 """Notification cadences: escalating overdue reminders and hold-expiry notices.
-
+ 
 Each sweep emits a domain event (delivered asynchronously by the outbox worker,
 so no SMTP runs on the sweep) and is idempotent: a given loan/hold fires at most
 once per cadence stage. Preference/compliance filtering happens at delivery time
