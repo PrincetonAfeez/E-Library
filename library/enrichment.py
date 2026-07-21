@@ -1,5 +1,5 @@
 """ISBN metadata enrichment from an external bibliographic source.
-
+ 
 Fetches title/author/publisher/subject/cover metadata for an ISBN (default:
 OpenLibrary) and fills in blanks on an Edition/Work. The HTTP fetch is injectable
 (``fetch=``) so the mapping logic is unit-testable without network access.
