@@ -1,4 +1,5 @@
 """OpenAPI authentication schema extension for scoped API tokens."""
+
 from drf_spectacular.extensions import OpenApiAuthenticationExtension
 
 
