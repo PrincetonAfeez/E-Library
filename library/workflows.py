@@ -1,4 +1,4 @@
-"""Staff productivity workflows: bulk copy ops, inventory/stocktake, lost/damaged.
+"""Staff productivity workflows: bulk copy ops, inventory/stocktake, lost/damaged
 
 These are the daily-driver desk tools: batch-editing and weeding copies,
 running a barcode stocktake that reports missing/unexpected items, and handling
