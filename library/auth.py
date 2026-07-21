@@ -1,4 +1,5 @@
 """Scoped API token authentication for DRF."""
+
 from rest_framework import authentication, exceptions
 
 from .models import ScopedApiToken
