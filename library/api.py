@@ -1,7 +1,9 @@
 """DRF API views and endpoints for catalog, circulation, and operations."""
+
 import csv
 import hashlib
 
+from django.db import transaction
 from django.http import HttpResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404
 from drf_spectacular.utils import (
@@ -67,7 +69,7 @@ from .services import (
     staff_checkin,
     waive_fee,
 )
-from .tenancy import get_current_organization
+from .tenancy import get_current_organization, staff_organization_for_user
 
 MAX_IMPORT_UPLOAD_BYTES = 5 * 1024 * 1024
 
@@ -171,9 +173,57 @@ BranchRequestSerializer = inline_serializer(
     fields={"branch": drf_serializers.CharField(required=False, allow_blank=True)},
 )
 
+PayFeesRequestSerializer = inline_serializer(
+    name="PayFeesRequest",
+    fields={
+        "amount_cents": drf_serializers.IntegerField(),
+        "reference": drf_serializers.CharField(required=False),
+    },
+)
+CheckoutCreateRequestSerializer = inline_serializer(
+    name="CheckoutCreateRequest", fields={"plan": drf_serializers.CharField()}
+)
+CheckoutCompleteRequestSerializer = inline_serializer(
+    name="CheckoutCompleteRequest",
+    fields={
+        "brand": drf_serializers.CharField(required=False),
+        "last4": drf_serializers.CharField(required=False),
+        "exp_month": drf_serializers.IntegerField(required=False),
+        "exp_year": drf_serializers.IntegerField(required=False),
+        "gateway_ref": drf_serializers.CharField(required=False),
+    },
+)
+PaymentMethodRequestSerializer = inline_serializer(
+    name="PaymentMethodRequest",
+    fields={
+        "brand": drf_serializers.CharField(required=False),
+        "last4": drf_serializers.CharField(required=False),
+        "exp_month": drf_serializers.IntegerField(required=False),
+        "exp_year": drf_serializers.IntegerField(required=False),
+        "make_default": drf_serializers.BooleanField(required=False),
+        "gateway_ref": drf_serializers.CharField(required=False),
+    },
+)
+
 
 def api_organization(request):
     return getattr(request, "organization", None) or get_current_organization(request)
+
+
+def staff_api_organization(request):
+    """Prefer the token org, then an active staff organization."""
+    organization = getattr(request, "organization", None) or staff_organization_for_user(
+        request.user, getattr(request, "session", None)
+    )
+    if organization is not None:
+        return organization
+    organization = get_current_organization(request)
+    if organization is not None and request.user and request.user.is_authenticated:
+        if request.user.is_superuser or request.user.staff_memberships.filter(
+            organization=organization, active=True
+        ).exists():
+            return organization
+    return None
 
 
 def _search_rate_limited(request) -> bool:
@@ -462,13 +512,14 @@ class LibrarianDashboardAPI(APIView):
 
     @extend_schema(responses={200: AccountResponseSerializer})
     def get(self, request):
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         if organization is None:
             return Response(
                 {"error": {"code": "no_organization", "message": "No active organization."}},
                 status=404,
             )
-        dashboard = get_librarian_dashboard(organization)
+        branch_ids = staff_branch_ids_for_org(request.user, organization)
+        dashboard = get_librarian_dashboard(organization, branch_ids=branch_ids)
         return Response(
             {
                 "overdue_loans": LoanSerializer(dashboard["overdue_loans"], many=True).data,
@@ -484,7 +535,7 @@ class LibrarianImportsAPI(APIView):
     required_staff_permission = "imports"
 
     def _organization(self, request):
-        return api_organization(request)
+        return staff_api_organization(request)
 
     @extend_schema(responses={200: OpenApiResponse(description="Import batches")})
     def get(self, request):
@@ -543,7 +594,7 @@ class LibrarianImportCommitAPI(APIView):
 
     @extend_schema(request=None, responses={200: OpenApiResponse(description="Committed batch")})
     def post(self, request, pk):
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         batch = get_object_or_404(CatalogImportBatch, pk=pk, organization=organization)
         try:
             commit_import(batch=batch, actor=request.user)
@@ -562,7 +613,7 @@ class LibrarianImportRollbackAPI(APIView):
 
     @extend_schema(request=None, responses={200: OpenApiResponse(description="Rolled back batch")})
     def post(self, request, pk):
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         batch = get_object_or_404(CatalogImportBatch, pk=pk, organization=organization)
         reason = ""
         if isinstance(request.data, dict):
@@ -594,7 +645,7 @@ class StaffCheckoutAPI(APIView):
     required_staff_permission = "circulation"
 
     def post(self, request):
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         data = request.data if isinstance(request.data, dict) else {}
         patron = get_object_or_404(
             PatronProfile, organization=organization, library_card_number=data.get("card_number")
@@ -634,6 +685,7 @@ class StaffCheckoutAPI(APIView):
                 actor=request.user,
                 source="staff",
                 override_reason=data.get("override_reason", ""),
+                allow_org_fallback=False,
             )
         except DomainError as exc:
             return Response({"error": {"code": "checkout_blocked", "message": str(exc)}}, status=409)
@@ -648,7 +700,7 @@ class StaffCheckinAPI(APIView):
     required_staff_permission = "circulation"
 
     def post(self, request):
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         data = request.data if isinstance(request.data, dict) else {}
         copy = get_object_or_404(Copy, organization=organization, barcode=data.get("barcode"))
         # An in-transit copy is received at its *destination*, but its record still
@@ -684,7 +736,7 @@ class CopyRetireAPI(APIView):
     required_staff_permission = "copies"
 
     def post(self, request):
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         data = request.data if isinstance(request.data, dict) else {}
         copy = get_object_or_404(Copy, organization=organization, barcode=data.get("barcode"))
         denied = _require_branch(request, organization, copy.branch_id, "branch_forbidden")
@@ -703,7 +755,7 @@ class CopyMoveAPI(APIView):
     required_staff_permission = "copies"
 
     def post(self, request):
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         data = request.data if isinstance(request.data, dict) else {}
         copy = get_object_or_404(Copy, organization=organization, barcode=data.get("barcode"))
         to_branch = get_object_or_404(
@@ -735,7 +787,7 @@ class LibrarianExportAPI(APIView):
     required_staff_permission = "reports"
 
     def get(self, request):
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         if organization is None:
             return Response(
                 {"error": {"code": "no_organization", "message": "No active organization."}},
@@ -756,19 +808,20 @@ class LibrarianExportAPI(APIView):
         writer = csv.writer(_CSVEcho())
 
         def stream():
-            for row in exporter(organization):
+            branch_ids = staff_branch_ids_for_org(request.user, organization)
+            for row in exporter(organization, branch_ids):
                 yield writer.writerow([_csv_safe(cell) for cell in row])
 
         response = StreamingHttpResponse(stream(), content_type="text/csv")
         response["Content-Disposition"] = f'attachment; filename="{export_type}.csv"'
         return response
 
-    def _loans(self, organization):
+    def _loans(self, organization, branch_ids=None):
         yield ["barcode", "title", "branch", "borrowed_at", "due_at", "status"]
         for loan in (
             Loan.objects.filter(
                 organization=organization, status__in=[LoanStatus.ACTIVE, LoanStatus.OVERDUE]
-            )
+            ).filter(**({"copy__branch_id__in": branch_ids} if branch_ids is not None else {}))
             .select_related("copy", "copy__edition__work", "copy__branch")
             .iterator()
         ):
@@ -781,10 +834,11 @@ class LibrarianExportAPI(APIView):
                 loan.status,
             ]
 
-    def _overdue(self, organization):
+    def _overdue(self, organization, branch_ids=None):
         yield ["barcode", "title", "branch", "due_at"]
         for loan in (
             Loan.objects.filter(organization=organization, status=LoanStatus.OVERDUE)
+            .filter(**({"copy__branch_id__in": branch_ids} if branch_ids is not None else {}))
             .select_related("copy", "copy__edition__work", "copy__branch")
             .iterator()
         ):
@@ -795,10 +849,11 @@ class LibrarianExportAPI(APIView):
                 loan.due_at.isoformat(),
             ]
 
-    def _holds(self, organization):
+    def _holds(self, organization, branch_ids=None):
         yield ["title", "pickup_branch", "status", "created_at", "expires_at"]
         for hold in (
             Hold.objects.filter(organization=organization)
+            .filter(**({"preferred_branch_id__in": branch_ids} if branch_ids is not None else {}))
             .exclude(status__in=["fulfilled", "cancelled", "expired"])
             .select_related("work", "preferred_branch")
             .iterator()
@@ -811,10 +866,11 @@ class LibrarianExportAPI(APIView):
                 hold.expires_at.isoformat() if hold.expires_at else "",
             ]
 
-    def _inventory(self, organization):
+    def _inventory(self, organization, branch_ids=None):
         yield ["barcode", "title", "branch", "status", "condition"]
         for copy in (
             Copy.objects.filter(organization=organization)
+            .filter(**({"branch_id__in": branch_ids} if branch_ids is not None else {}))
             .select_related("edition__work", "branch")
             .iterator()
         ):
@@ -861,8 +917,10 @@ class PayFeesAPI(APIView):
     permission_classes = [IsAuthenticatedPatron, TokenHasScope]
     required_scope = "circulation:write"
 
-    @extend_schema(request=None, responses={201: OpenApiResponse(description="Payment recorded")})
+    @extend_schema(request=PayFeesRequestSerializer, responses={201: OpenApiResponse(description="Payment recorded")})
     def post(self, request):
+        from . import billing
+
         patron = request.user.patron_profile
         data = request.data if isinstance(request.data, dict) else {}
         try:
@@ -872,15 +930,52 @@ class PayFeesAPI(APIView):
                 {"error": {"code": "bad_amount", "message": "amount_cents must be an integer."}},
                 status=400,
             )
+        method = (data.get("method") or "online").strip().lower()
         try:
-            payment = record_payment(
-                patron=patron,
-                amount_cents=amount,
-                method=data.get("method", "online"),
-                reference=data.get("reference", ""),
-                actor=request.user,
-            )
+            if method != "online":
+                # Patrons may not self-record desk methods.
+                return Response(
+                    {
+                        "error": {
+                            "code": "method_not_allowed",
+                            "message": "Patrons may only pay online; staff can record desk payments.",
+                        }
+                    },
+                    status=400,
+                )
+            with transaction.atomic():
+                patron = PatronProfile.objects.select_for_update().get(pk=patron.pk)
+                balance = patron_balance_cents(patron)
+                if amount <= 0 or amount > balance:
+                    return Response(
+                        {"error": {"code": "bad_amount", "message": "Amount must be positive and no greater than the outstanding balance."}},
+                        status=400,
+                    )
+                charge_result = billing.charge_online_amount(
+                    organization=patron.organization,
+                    amount_cents=amount,
+                    idempotency_key=f"fee_pay:{patron.pk}:{amount}:{balance}",
+                )
+                charged, charge_id = (
+                    charge_result if isinstance(charge_result, tuple) else (charge_result, "")
+                )
+                if not charged:
+                    return Response(
+                        {"error": {"code": "card_declined", "message": "Card was declined."}},
+                        status=402,
+                    )
+                payment = record_payment(
+                    patron=patron,
+                    amount_cents=amount,
+                    method="online",
+                    reference=data.get("reference", ""),
+                    actor=request.user,
+                    captured=True,
+                    gateway_charge_id=charge_id,
+                )
         except DomainError as exc:
+            return Response({"error": {"code": "payment_failed", "message": str(exc)}}, status=400)
+        except billing.BillingError as exc:
             return Response({"error": {"code": "payment_failed", "message": str(exc)}}, status=400)
         return Response(
             {"data": {"payment_id": payment.pk, "balance_cents": patron_balance_cents(patron)}},
@@ -895,7 +990,7 @@ class WaiveFeeAPI(APIView):
 
     @extend_schema(request=None, responses={200: OpenApiResponse(description="Fee waived")})
     def post(self, request, pk):
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         fee = get_object_or_404(Fee, pk=pk, organization=organization)
         reason = request.data.get("reason", "") if isinstance(request.data, dict) else ""
         waive_fee(fee=fee, actor=request.user, reason=reason)
@@ -912,7 +1007,7 @@ class BillingAPI(APIView):
     def get(self, request):
         from . import billing
 
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         if organization is None:
             return Response(
                 {"error": {"code": "no_organization", "message": "No active organization."}},
@@ -970,7 +1065,7 @@ class ChangePlanAPI(APIView):
         from . import billing
         from .models import Plan
 
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         data = request.data if isinstance(request.data, dict) else {}
         plan = get_object_or_404(Plan, slug=data.get("plan"), active=True)
         subscription = billing.get_subscription(organization)
@@ -997,14 +1092,16 @@ class CancelSubscriptionAPI(APIView):
     def post(self, request):
         from . import billing
 
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         subscription = billing.get_subscription(organization)
         if subscription is None:
             return Response(
                 {"error": {"code": "no_subscription", "message": "No subscription to cancel."}},
                 status=404,
             )
-        billing.cancel_subscription(subscription=subscription, actor=request.user)
+        subscription = billing.cancel_subscription(
+            subscription=subscription, actor=request.user
+        )
         return Response({"data": {"status": subscription.status}})
 
 
@@ -1015,12 +1112,12 @@ class CheckoutAPI(APIView):
     required_scope = "staff:write"
     required_staff_permission = "billing"
 
-    @extend_schema(request=None, responses={201: OpenApiResponse(description="Checkout opened")})
+    @extend_schema(request=CheckoutCreateRequestSerializer, responses={201: OpenApiResponse(description="Checkout opened")})
     def post(self, request):
         from . import billing
         from .models import Plan
 
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         data = request.data if isinstance(request.data, dict) else {}
         plan = get_object_or_404(Plan, slug=data.get("plan"), active=True)
         session = billing.create_checkout(
@@ -1033,6 +1130,7 @@ class CheckoutAPI(APIView):
                     "plan": plan.slug,
                     "amount_cents": plan.price_cents,
                     "complete_url": f"/api/v1/billing/checkout/{session.token}/complete/",
+                    **({"hosted_url": session.hosted_url} if getattr(session, "hosted_url", "") else {}),
                 }
             },
             status=201,
@@ -1046,12 +1144,12 @@ class CheckoutCompleteAPI(APIView):
     required_scope = "staff:write"
     required_staff_permission = "billing"
 
-    @extend_schema(request=None, responses={200: OpenApiResponse(description="Subscription active")})
+    @extend_schema(request=CheckoutCompleteRequestSerializer, responses={200: OpenApiResponse(description="Subscription active")})
     def post(self, request, token):
         from . import billing
         from .models import CheckoutSession
 
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         session = get_object_or_404(
             CheckoutSession, token=token, organization=organization
         )
@@ -1064,6 +1162,7 @@ class CheckoutCompleteAPI(APIView):
                 exp_month=int(data.get("exp_month", 12)),
                 exp_year=int(data.get("exp_year", 2030)),
                 actor=request.user,
+                gateway_ref=data.get("gateway_ref", ""),
             )
         except billing.BillingError as exc:
             return Response(
@@ -1085,11 +1184,11 @@ class PaymentMethodAPI(APIView):
     required_scope = "staff:write"
     required_staff_permission = "billing"
 
-    @extend_schema(request=None, responses={201: OpenApiResponse(description="Card stored")})
+    @extend_schema(request=PaymentMethodRequestSerializer, responses={201: OpenApiResponse(description="Card stored")})
     def post(self, request):
         from . import billing
 
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         data = request.data if isinstance(request.data, dict) else {}
         try:
             method = billing.add_payment_method(
@@ -1100,10 +1199,15 @@ class PaymentMethodAPI(APIView):
                 exp_year=int(data.get("exp_year", 2030)),
                 make_default=bool(data.get("make_default", True)),
                 actor=request.user,
+                gateway_ref=str(data.get("gateway_ref") or ""),
             )
         except (TypeError, ValueError):
             return Response(
                 {"error": {"code": "invalid_card", "message": "Invalid card details."}}, status=400
+            )
+        except billing.BillingError as exc:
+            return Response(
+                {"error": {"code": "invalid_card", "message": str(exc)}}, status=400
             )
         return Response(
             {"data": {"id": method.pk, "brand": method.brand, "last4": method.last4}}, status=201
@@ -1111,7 +1215,7 @@ class PaymentMethodAPI(APIView):
 
 
 class StripeWebhookAPI(APIView):
-    """Payment-provider webhook receiver. Signature is verified when configured."""
+    """Payment-provider webhook receiver. Signature is always required outside DEBUG."""
 
     permission_classes = [permissions.AllowAny]
     authentication_classes: list = []
@@ -1122,17 +1226,25 @@ class StripeWebhookAPI(APIView):
         from . import billing
 
         secret = getattr(settings, "STRIPE_WEBHOOK_SECRET", "")
-        event = request.data if isinstance(request.data, dict) else {}
-        if secret:
-            try:  # pragma: no cover - only when Stripe is configured
-                import stripe
+        if not secret:
+            if settings.DEBUG:
+                event = request.data if isinstance(request.data, dict) else {}
+                handled = billing.handle_gateway_event(dict(event))
+                return Response({"handled": handled})
+            return Response(
+                {"error": {"code": "webhook_unconfigured", "message": "Stripe webhook secret required."}},
+                status=503,
+            )
+        try:
+            import stripe
 
-                event = stripe.Webhook.construct_event(
-                    request.body, request.META.get("HTTP_STRIPE_SIGNATURE", ""), secret
-                )
-            except Exception:
-                return Response({"error": {"code": "bad_signature"}}, status=400)
-        handled = billing.handle_gateway_event(dict(event))
+            event = stripe.Webhook.construct_event(
+                request.body, request.META.get("HTTP_STRIPE_SIGNATURE", ""), secret
+            )
+        except Exception:
+            return Response({"error": {"code": "bad_signature"}}, status=400)
+        payload = event.to_dict() if hasattr(event, "to_dict") else dict(event)
+        handled = billing.handle_gateway_event(payload)
         return Response({"handled": handled})
 
 
@@ -1146,7 +1258,7 @@ class LibrarianMarcImportAPI(APIView):
     def post(self, request):
         from .imports import import_marc
 
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         if organization is None:
             return Response(
                 {"error": {"code": "no_organization", "message": "No active organization."}},
@@ -1186,7 +1298,7 @@ class MarcExportAPI(APIView):
         from .marc import edition_to_marc_record, to_iso2709, to_marcxml
         from .models import Edition
 
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         if organization is None:
             return Response(
                 {"error": {"code": "no_organization", "message": "No active organization."}},
@@ -1219,7 +1331,7 @@ class EditionEnrichAPI(APIView):
         from .enrichment import enrich_edition
         from .models import Edition
 
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         edition = get_object_or_404(
             Edition, pk=pk, copies__organization=organization
         )
@@ -1243,7 +1355,7 @@ class LibrarianReportsAPI(APIView):
 
         from . import reporting
 
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         if organization is None:
             return Response(
                 {"error": {"code": "no_organization", "message": "No active organization."}},
@@ -1276,7 +1388,7 @@ class CirculationPoliciesAPI(APIView):
     def get(self, request):
         from .models import CirculationPolicy, MaterialType, PatronType
 
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         if organization is None:
             return Response(
                 {"error": {"code": "no_organization", "message": "No active organization."}},
@@ -1531,7 +1643,7 @@ class AcquisitionOrdersAPI(APIView):
     def get(self, request):
         from .models import PurchaseOrder
 
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         if organization is None:
             return Response({"error": {"code": "no_organization", "message": "None."}}, status=404)
         pos = PurchaseOrder.objects.filter(organization=organization).select_related(
@@ -1543,7 +1655,7 @@ class AcquisitionOrdersAPI(APIView):
         from . import acquisitions
         from .models import Fund, Vendor
 
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         data = request.data if isinstance(request.data, dict) else {}
         vendor = get_object_or_404(Vendor, organization=organization, code=data.get("vendor"))
         fund = get_object_or_404(Fund, organization=organization, code=data.get("fund"))
@@ -1562,7 +1674,7 @@ class AcquisitionLinesAPI(APIView):
         from . import acquisitions
         from .models import Branch, Edition, PurchaseOrder
 
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         po = get_object_or_404(PurchaseOrder, pk=pk, organization=organization)
         data = request.data if isinstance(request.data, dict) else {}
         branch = get_object_or_404(Branch, organization=organization, slug=data.get("branch"))
@@ -1593,7 +1705,7 @@ class AcquisitionPlaceAPI(APIView):
         from . import acquisitions
         from .models import PurchaseOrder
 
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         po = get_object_or_404(PurchaseOrder, pk=pk, organization=organization)
         try:
             acquisitions.place_order(purchase_order=po, actor=request.user)
@@ -1612,7 +1724,7 @@ class AcquisitionReceiveAPI(APIView):
         from . import acquisitions
         from .models import PurchaseOrderLine
 
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         line = get_object_or_404(
             PurchaseOrderLine, pk=pk, purchase_order__organization=organization
         )
@@ -1629,7 +1741,12 @@ class AcquisitionReceiveAPI(APIView):
 class WorkReviewsAPI(APIView):
     """Public list of reviews + rating for a work; patrons POST their review."""
 
-    permission_classes = [permissions.AllowAny]
+    def get_permissions(self):
+        if self.request.method == "POST":
+            return [IsAuthenticatedPatron(), TokenHasScope()]
+        return [permissions.AllowAny()]
+
+    required_scope = "circulation:write"
 
     def get(self, request, slug):
         from . import social
@@ -1655,8 +1772,6 @@ class WorkReviewsAPI(APIView):
         from . import social
         from .models import Work
 
-        if not (request.user.is_authenticated and hasattr(request.user, "patron_profile")):
-            return Response({"error": {"code": "forbidden"}}, status=403)
         work = get_object_or_404(Work, slug=slug, public_status=PublicStatus.PUBLISHED)
         data = request.data if isinstance(request.data, dict) else {}
         try:
@@ -1761,8 +1876,70 @@ class AccountEraseAPI(APIView):
                 {"error": {"code": "confirm_required", "message": "Set confirm=true to erase."}},
                 status=400,
             )
-        privacy.erase_patron(patron=request.user.patron_profile, actor=request.user)
+        try:
+            privacy.erase_patron(patron=request.user.patron_profile, actor=request.user)
+        except DomainError as exc:
+            return Response({"error": {"code": "erase_blocked", "message": str(exc)}}, status=409)
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class SupportPatronLookupAPI(APIView):
+    """Read-only support console: look up a patron by card within the staff org.
+
+    Requires an explicit reason (audited). No silent mutation / impersonation.
+    """
+
+    permission_classes = [HasStaffPermission, TokenHasScope]
+    required_scope = "staff:read"
+    required_staff_permission = "support"
+
+    def get(self, request):
+        from .models import PatronProfile
+        from .services import audit_action, patron_balance_cents
+
+        organization = staff_api_organization(request)
+        if organization is None:
+            return Response({"error": {"code": "no_organization"}}, status=404)
+        card = (request.GET.get("card") or "").strip()
+        reason = (request.GET.get("reason") or "").strip()
+        if not card or not reason:
+            return Response(
+                {"error": {"code": "reason_required", "message": "card and reason are required."}},
+                status=400,
+            )
+        patron = get_object_or_404(
+            PatronProfile, organization=organization, library_card_number=card
+        )
+        audit_action(
+            action="support.patron_lookup",
+            entity=patron,
+            actor=request.user,
+            after={"reason": reason[:200]},
+            source="support",
+        )
+        from .models import HoldStatus, LoanStatus
+
+        return Response(
+            {
+                "data": {
+                    "card": patron.library_card_number,
+                    "status": patron.status,
+                    "username": patron.user.get_username(),
+                    "email": patron.user.email,
+                    "balance_cents": patron_balance_cents(patron),
+                    "active_loans": patron.loans.filter(
+                        status__in=[LoanStatus.ACTIVE, LoanStatus.OVERDUE]
+                    ).count(),
+                    "active_holds": patron.holds.exclude(
+                        status__in=[
+                            HoldStatus.CANCELLED,
+                            HoldStatus.FULFILLED,
+                            HoldStatus.EXPIRED,
+                        ]
+                    ).count(),
+                }
+            }
+        )
 
 
 class WebhookEndpointsAPI(APIView):
@@ -1775,7 +1952,7 @@ class WebhookEndpointsAPI(APIView):
     def get(self, request):
         from .models import WebhookEndpoint
 
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         if organization is None:
             return Response({"error": {"code": "no_organization"}}, status=404)
         eps = WebhookEndpoint.objects.filter(organization=organization)
@@ -1798,19 +1975,28 @@ class WebhookEndpointsAPI(APIView):
 
         from .models import WebhookEndpoint
 
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         data = request.data if isinstance(request.data, dict) else {}
         url = data.get("url")
         if not url:
             return Response({"error": {"code": "url_required"}}, status=400)
+        from .crypto import encrypt_value
+        from .net import UnsafeUrlError, validate_outbound_url
+
+        try:
+            validate_outbound_url(url)
+        except UnsafeUrlError as exc:
+            return Response({"error": {"code": "unsafe_url", "message": str(exc)}}, status=400)
+        raw_secret = data.get("secret") or _secrets.token_urlsafe(24)
         endpoint = WebhookEndpoint.objects.create(
             organization=organization,
             url=url,
-            secret=data.get("secret") or _secrets.token_urlsafe(24),
+            secret=encrypt_value(raw_secret),
             event_types=data.get("event_types") or ["*"],
         )
+        # Return the plaintext secret once; subsequent GETs never echo it.
         return Response(
-            {"data": {"id": endpoint.pk, "url": endpoint.url, "secret": endpoint.secret}},
+            {"data": {"id": endpoint.pk, "url": endpoint.url, "secret": raw_secret}},
             status=status.HTTP_201_CREATED,
         )
 
@@ -1965,7 +2151,7 @@ class IllListAPI(APIView):
 
         from .models import IllRequest
 
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         rows = (
             IllRequest.objects.filter(
                 Q(requesting_org=organization) | Q(lending_org=organization)
@@ -1998,8 +2184,16 @@ class IllActionAPI(APIView):
 
         if action not in self.ACTIONS:
             return Response({"error": {"code": "bad_action"}}, status=400)
-        organization = api_organization(request)
-        ill = get_object_or_404(IllRequest, pk=pk)
+        from django.db.models import Q
+
+        organization = staff_api_organization(request)
+        if organization is None:
+            return Response({"error": {"code": "no_organization"}}, status=404)
+        # Scope visibility to orgs that are a party to the ILL (404, not 403 probe).
+        ill = get_object_or_404(
+            IllRequest.objects.filter(Q(requesting_org=organization) | Q(lending_org=organization)),
+            pk=pk,
+        )
         fn_name, side = self.ACTIONS[action]
         allowed = (
             (side == "lending" and ill.lending_org_id == getattr(organization, "pk", None))
@@ -2026,7 +2220,11 @@ class NotificationPrefsAPI(APIView):
     """Read/update a patron's notification channels and per-category preferences."""
 
     permission_classes = [IsAuthenticatedPatron, TokenHasScope]
-    required_scope = "patron:read"
+    required_scope = "patron:write"
+
+    def get_permissions(self):
+        self.required_scope = "patron:read" if self.request.method == "GET" else "patron:write"
+        return [IsAuthenticatedPatron(), TokenHasScope()]
 
     def get(self, request):
         patron = request.user.patron_profile
@@ -2086,7 +2284,7 @@ class BulkCopyAPI(APIView):
     def post(self, request):
         from . import workflows
 
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         data = request.data if isinstance(request.data, dict) else {}
         barcodes = data.get("barcodes") or []
         if not isinstance(barcodes, list) or not barcodes:
@@ -2112,7 +2310,7 @@ class WeedCopiesAPI(APIView):
     def post(self, request):
         from . import workflows
 
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         data = request.data if isinstance(request.data, dict) else {}
         barcodes = [str(b) for b in (data.get("barcodes") or [])]
         result = workflows.weed_copies(
@@ -2131,7 +2329,7 @@ class InventoryStartAPI(APIView):
         from . import workflows
         from .models import Branch
 
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         data = request.data if isinstance(request.data, dict) else {}
         branch = get_object_or_404(Branch, organization=organization, slug=data.get("branch"))
         session = workflows.start_inventory(
@@ -2149,7 +2347,7 @@ class InventoryScanAPI(APIView):
         from . import workflows
         from .models import InventorySession
 
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         session = get_object_or_404(InventorySession, pk=pk, organization=organization)
         data = request.data if isinstance(request.data, dict) else {}
         try:
@@ -2168,7 +2366,7 @@ class InventoryCloseAPI(APIView):
         from . import workflows
         from .models import InventorySession
 
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         session = get_object_or_404(InventorySession, pk=pk, organization=organization)
         try:
             session = workflows.close_inventory(session=session, actor=request.user)
@@ -2194,7 +2392,7 @@ class LoanExceptionAPI(APIView):
         from . import workflows
         from .models import Loan
 
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         loan = get_object_or_404(Loan, pk=pk, organization=organization)
         try:
             if action == "lost":
@@ -2225,7 +2423,7 @@ class RefundAPI(APIView):
         from . import finance
         from .models import Payment
 
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         data = request.data if isinstance(request.data, dict) else {}
         payment = get_object_or_404(Payment, pk=data.get("payment_id"), organization=organization)
         try:
@@ -2247,7 +2445,7 @@ class PaymentPlanAPI(APIView):
         from . import finance
         from .models import PatronProfile
 
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         data = request.data if isinstance(request.data, dict) else {}
         patron = get_object_or_404(PatronProfile, pk=data.get("patron_id"), organization=organization)
         try:
@@ -2271,11 +2469,14 @@ class PaymentPlanPayAPI(APIView):
         from . import finance
         from .models import PaymentPlan
 
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         plan = get_object_or_404(PaymentPlan, pk=pk, organization=organization)
         try:
             payment = finance.pay_installment(
-                plan=plan, amount_cents=request.data.get("amount_cents"), actor=request.user
+                plan=plan,
+                amount_cents=request.data.get("amount_cents"),
+                method=request.data.get("method", "online"),
+                actor=request.user,
             )
         except DomainError as exc:
             return Response({"error": {"code": "pay_blocked", "message": str(exc)}}, status=409)
@@ -2293,7 +2494,7 @@ class AmnestyAPI(APIView):
     def post(self, request):
         from . import finance
 
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         waived = finance.run_amnesty(organization=organization, actor=request.user)
         return Response({"data": {"waived": waived}})
 
@@ -2308,7 +2509,7 @@ class GlExportAPI(APIView):
 
         from . import finance
 
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         start = parse_date(request.GET.get("start", "") or "")
         end = parse_date(request.GET.get("end", "") or "")
         rows = finance.gl_export(organization=organization, start=start, end=end)
@@ -2326,7 +2527,7 @@ class AnalyticsAPI(APIView):
     def get(self, request, report):
         from . import analytics
 
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
         if report == "turnover":
             return Response({"data": analytics.collection_turnover(organization)})
         if report == "purchase-suggestions":
@@ -2344,9 +2545,15 @@ class AuditLogAPI(APIView):
     required_staff_permission = "reports"
 
     def get(self, request):
-        from .models import AuditLog
+        from .models import AuditLog, StaffMembership, StaffRole
 
-        organization = api_organization(request)
+        organization = staff_api_organization(request)
+        is_admin = request.user.is_superuser or StaffMembership.objects.filter(
+            user=request.user,
+            organization=organization,
+            active=True,
+            role=StaffRole.ADMIN,
+        ).exists()
         qs = AuditLog.objects.filter(organization=organization)
         action = request.GET.get("action")
         if action:
@@ -2361,7 +2568,7 @@ class AuditLogAPI(APIView):
                     "actor_id": a.actor_id,
                     "source": a.source,
                     "at": a.created_at,
-                    "after": a.after,
+                    "after": a.after if is_admin else {},
                 }
                 for a in rows
             ]}
@@ -2377,7 +2584,15 @@ class MfaEnrollAPI(APIView):
     def post(self, request):
         from . import mfa
 
-        return Response({"data": mfa.begin_enrollment(user=request.user)}, status=201)
+        data = request.data if isinstance(request.data, dict) else {}
+        try:
+            info = mfa.begin_enrollment(
+                user=request.user,
+                current_code=str(data["current_code"]) if data.get("current_code") else None,
+            )
+        except DomainError as exc:
+            return Response({"error": {"code": "mfa_step_up", "message": str(exc)}}, status=403)
+        return Response({"data": info}, status=201)
 
 
 class MfaConfirmAPI(APIView):
@@ -2385,11 +2600,20 @@ class MfaConfirmAPI(APIView):
 
     def post(self, request):
         from . import mfa
+        from .permissions import resolve_request_organization, resolve_staff_request_organization
 
         try:
             mfa.confirm_enrollment(user=request.user, code=str(request.data.get("code", "")))
         except DomainError as exc:
             return Response({"error": {"code": "mfa_invalid", "message": str(exc)}}, status=400)
+        if hasattr(request, "session"):
+            mfa.mark_session_verified(
+                request,
+                organization=(
+                    resolve_staff_request_organization(request)
+                    or resolve_request_organization(request)
+                ),
+            )
         return Response({"data": {"confirmed": True}})
 
 
@@ -2398,10 +2622,17 @@ class MfaVerifyAPI(APIView):
 
     def post(self, request):
         from . import mfa
+        from .permissions import resolve_request_organization, resolve_staff_request_organization
 
         ok = mfa.verify_login(user=request.user, code=str(request.data.get("code", "")))
         if ok and hasattr(request, "session"):
-            request.session["mfa_verified"] = True
+            mfa.mark_session_verified(
+                request,
+                organization=(
+                    resolve_staff_request_organization(request)
+                    or resolve_request_organization(request)
+                ),
+            )
         return Response({"data": {"verified": ok}}, status=200 if ok else 401)
 
 
@@ -2411,7 +2642,16 @@ class MfaDisableAPI(APIView):
     def post(self, request):
         from . import mfa
 
-        mfa.disable_mfa(user=request.user, actor=request.user)
+        try:
+            mfa.disable_mfa(
+                user=request.user,
+                code=str(request.data.get("code", "")),
+                actor=request.user,
+            )
+        except DomainError as exc:
+            return Response({"error": {"code": "mfa_step_up", "message": str(exc)}}, status=403)
+        if hasattr(request, "session"):
+            request.session.pop("mfa_verified", None)
         return Response({"data": {"enabled": False}})
 
 
