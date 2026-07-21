@@ -1,4 +1,5 @@
 """Django ORM models for catalog, circulation, billing, and operations."""
+
 import hashlib
 import secrets
 
@@ -43,6 +44,10 @@ class Organization(TimeStampedModel):
     # When enabled, staff with a confirmed TOTP device must pass a second factor
     # before reaching staff areas.
     require_staff_mfa = models.BooleanField(default=False)
+    # SIP2 self-check credentials (CN/CO). Empty = SIP2 login disabled for the org.
+    # Password is Fernet-encrypted at rest (library.crypto); plaintext still decrypts for migration.
+    sip2_login_user = models.CharField(max_length=64, blank=True, default="")
+    sip2_login_password = models.CharField(max_length=512, blank=True, default="")
 
     class Meta:
         ordering = ["name"]
@@ -834,7 +839,8 @@ class WebhookEndpoint(TimeStampedModel):
         Organization, on_delete=models.CASCADE, related_name="webhook_endpoints"
     )
     url = models.URLField()
-    secret = models.CharField(max_length=128, blank=True)
+    # Fernet ciphertext at rest (see library.crypto).
+    secret = models.CharField(max_length=512, blank=True)
     # Event types to deliver; ["*"] == all.
     event_types = models.JSONField(default=list, blank=True)
     active = models.BooleanField(default=True)
@@ -852,6 +858,7 @@ class WebhookEndpoint(TimeStampedModel):
 
 class WebhookDeliveryStatus(models.TextChoices):
     PENDING = "pending", "Pending"
+    SENDING = "sending", "Sending"
     DELIVERED = "delivered", "Delivered"
     FAILED = "failed", "Failed"
 
@@ -860,6 +867,7 @@ class WebhookDelivery(TimeStampedModel):
     endpoint = models.ForeignKey(
         WebhookEndpoint, on_delete=models.CASCADE, related_name="deliveries"
     )
+    outbox_event_id = models.PositiveIntegerField(null=True, blank=True, db_index=True)
     event_type = models.CharField(max_length=120)
     payload = models.JSONField(default=dict)
     status = models.CharField(
@@ -873,6 +881,13 @@ class WebhookDelivery(TimeStampedModel):
 
     class Meta:
         ordering = ["next_attempt_at", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["endpoint", "outbox_event_id"],
+                condition=Q(outbox_event_id__isnull=False),
+                name="uniq_webhook_delivery_outbox",
+            )
+        ]
         indexes = [
             models.Index(fields=["status", "next_attempt_at"], name="webhook_status_due_idx")
         ]
@@ -886,7 +901,9 @@ class SsoConnection(TimeStampedModel):
     )
     provider = models.CharField(max_length=32, default="oidc")
     client_id = models.CharField(max_length=200)
-    client_secret = models.CharField(max_length=255, blank=True)
+    # Fernet ciphertext at rest (see library.crypto); length allows enc2: tokens.
+    client_secret = models.CharField(max_length=512, blank=True)
+    issuer = models.URLField(blank=True, default="")
     authorize_url = models.URLField()
     token_url = models.URLField()
     userinfo_url = models.URLField()
@@ -1175,6 +1192,9 @@ class DigitalAsset(TimeStampedModel):
     """The deliverable content for an edition: chaptered text or a binary blob."""
 
     edition = models.ForeignKey(Edition, on_delete=models.CASCADE, related_name="digital_assets")
+    organization = models.ForeignKey(
+        Organization, on_delete=models.CASCADE, null=True, blank=True, related_name="digital_assets"
+    )
     fmt = models.CharField(
         max_length=16, choices=DigitalAssetFormat.choices, default=DigitalAssetFormat.TEXT
     )
@@ -1190,7 +1210,16 @@ class DigitalAsset(TimeStampedModel):
     class Meta:
         ordering = ["edition", "fmt"]
         constraints = [
-            models.UniqueConstraint(fields=["edition", "fmt"], name="uniq_asset_edition_fmt")
+            models.UniqueConstraint(
+                fields=["edition", "fmt"],
+                condition=Q(organization__isnull=True),
+                name="uniq_asset_edition_fmt_global",
+            ),
+            models.UniqueConstraint(
+                fields=["organization", "edition", "fmt"],
+                condition=Q(organization__isnull=False),
+                name="uniq_asset_org_edition_fmt",
+            ),
         ]
 
     def __str__(self) -> str:
@@ -1320,6 +1349,8 @@ class Plan(TimeStampedModel):
     features = models.JSONField(default=list, blank=True)
     public = models.BooleanField(default=True)
     active = models.BooleanField(default=True)
+    # Stripe Price id (price_…); required when STRIPE_SECRET_KEY is configured.
+    external_price_id = models.CharField(max_length=120, blank=True, default="")
 
     class Meta:
         ordering = ["price_cents", "name"]
@@ -1361,7 +1392,12 @@ class Subscription(TimeStampedModel):
 
     @property
     def is_serviceable(self) -> bool:
-        return self.status in {SubscriptionStatus.TRIALING, SubscriptionStatus.ACTIVE}
+        if self.status in {SubscriptionStatus.TRIALING, SubscriptionStatus.ACTIVE}:
+            return True
+        # Past-due tenants keep service only through the configured grace window.
+        if self.status == SubscriptionStatus.PAST_DUE and self.grace_until:
+            return self.grace_until > timezone.now()
+        return False
 
 
 class InvoiceStatus(models.TextChoices):
@@ -1422,6 +1458,11 @@ class PaymentMethod(TimeStampedModel):
     last4 = models.CharField(max_length=4, default="4242")
     exp_month = models.PositiveSmallIntegerField(default=12)
     exp_year = models.PositiveSmallIntegerField(default=2030)
+    purpose = models.CharField(
+        max_length=16,
+        choices=[("saas", "SaaS subscription"), ("fines", "Patron fines")],
+        default="saas",
+    )
     is_default = models.BooleanField(default=True)
 
     class Meta:
@@ -1445,6 +1486,8 @@ class CheckoutSession(TimeStampedModel):
     )
     plan = models.ForeignKey(Plan, on_delete=models.PROTECT, related_name="checkout_sessions")
     token = models.CharField(max_length=64, unique=True)
+    external_session_id = models.CharField(max_length=120, blank=True, default="")
+    hosted_url = models.URLField(max_length=500, blank=True, default="")
     status = models.CharField(
         max_length=16, choices=CheckoutStatus.choices, default=CheckoutStatus.OPEN
     )
@@ -1488,7 +1531,11 @@ class FeeStatus(models.TextChoices):
 
 class Fee(TimeStampedModel):
     organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="fees")
-    patron = models.ForeignKey(PatronProfile, on_delete=models.CASCADE, related_name="fees")
+    # Nullable so GDPR erasure can detach the patron while retaining the ledger.
+    patron = models.ForeignKey(
+        PatronProfile, on_delete=models.SET_NULL, null=True, blank=True, related_name="fees"
+    )
+    patron_hash = models.CharField(max_length=64, blank=True, default="")
     loan = models.ForeignKey(
         Loan, on_delete=models.SET_NULL, null=True, blank=True, related_name="fees"
     )
@@ -1527,12 +1574,17 @@ class Payment(TimeStampedModel):
     organization = models.ForeignKey(
         Organization, on_delete=models.CASCADE, related_name="payments"
     )
-    patron = models.ForeignKey(PatronProfile, on_delete=models.CASCADE, related_name="payments")
+    patron = models.ForeignKey(
+        PatronProfile, on_delete=models.SET_NULL, null=True, blank=True, related_name="payments"
+    )
+    patron_hash = models.CharField(max_length=64, blank=True, default="")
     amount_cents = models.PositiveIntegerField()
     method = models.CharField(max_length=32, default="online")
     # "payment" moves money in; "refund" reverses a prior payment.
     kind = models.CharField(max_length=16, default="payment")
     reference = models.CharField(max_length=160, blank=True)
+    gateway_charge_id = models.CharField(max_length=255, blank=True, default="")
+    gateway_refund_id = models.CharField(max_length=255, blank=True, default="")
     actor = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
 
     class Meta:
@@ -1541,6 +1593,14 @@ class Payment(TimeStampedModel):
     def __str__(self) -> str:
         sign = "-" if self.kind == "refund" else ""
         return f"{sign}${self.amount_cents / 100:.2f} via {self.method}"
+
+
+class GatewayEvent(models.Model):
+    """Idempotency ledger for incoming payment-gateway events."""
+
+    event_id = models.CharField(max_length=120, unique=True)
+    event_type = models.CharField(max_length=120)
+    processed_at = models.DateTimeField(auto_now_add=True)
 
 
 class PaymentAllocation(TimeStampedModel):
@@ -1685,8 +1745,13 @@ class PaymentPlan(TimeStampedModel):
         Organization, on_delete=models.CASCADE, related_name="payment_plans"
     )
     patron = models.ForeignKey(
-        PatronProfile, on_delete=models.CASCADE, related_name="payment_plans"
+        PatronProfile,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="payment_plans",
     )
+    patron_hash = models.CharField(max_length=64, blank=True, default="")
     total_cents = models.PositiveIntegerField()
     installment_cents = models.PositiveIntegerField()
     paid_cents = models.PositiveIntegerField(default=0)
