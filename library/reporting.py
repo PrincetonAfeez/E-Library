@@ -1,4 +1,4 @@
-"""Reporting & analytics selectors.
+"""Reporting & analytics selectors
 
 Pure, organization-scoped query functions over the operational data already
 captured (loans, holds, copies, fees, payments, search logs). Each returns
