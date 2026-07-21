@@ -1,5 +1,5 @@
 """A small per-host circuit breaker for outbound HTTP.
-
+ 
 Wraps external calls (which already carry timeouts) so that a provider that is
 down or slow stops being hammered: after ``threshold`` consecutive failures the
 circuit opens for ``cooldown`` seconds and calls fail fast with ``CircuitOpen``;
