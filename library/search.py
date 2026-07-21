@@ -1,4 +1,4 @@
-"""Discovery-quality search: autocomplete, did-you-mean, and semantic ranking.
+"""Discovery-quality search: autocomplete, did-you-mean, and semantic ranking
 
 Semantic search normally needs a vector database (pgvector) and an embedding
 model. To keep the product fully offline and deterministic in tests, this module
