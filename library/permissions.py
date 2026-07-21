@@ -1,7 +1,8 @@
 """DRF permission classes and staff role authorization helpers."""
+
 from rest_framework import permissions
 
-from .tenancy import get_current_organization
+from .tenancy import get_current_organization, staff_organization_for_user
 
 # Baseline permissions granted by each staff role. A membership may additionally
 # carry explicit permission strings in ``StaffMembership.permissions`` (or "*").
@@ -9,8 +10,10 @@ STAFF_ROLE_PERMISSIONS = {
     "admin": {"*"},
     "branch_manager": {"circulation", "copies", "catalog", "imports", "reports", "acquisitions"},
     "librarian": {"circulation", "copies", "catalog", "reports"},
-    "support": {"reports"},
+    # Support: read diagnostics + audited support tooling (not silent mutation).
+    "support": {"reports", "support"},
 }
+# billing + webhooks remain admin-only via "*" (or explicit StaffMembership.permissions).
 
 
 def user_is_staff_for_org(user, organization) -> bool:
@@ -72,6 +75,17 @@ def resolve_request_organization(request):
     return getattr(request, "organization", None) or get_current_organization(request)
 
 
+def resolve_staff_request_organization(request):
+    """Use token scope first, avoiding a staff user's patron organization."""
+    return (
+        getattr(request, "organization", None)
+        or staff_organization_for_user(
+            getattr(request, "user", None), getattr(request, "session", None)
+        )
+        or get_current_organization(request)
+    )
+
+
 class IsAuthenticatedPatron(permissions.BasePermission):
     def has_permission(self, request, view):
         return bool(
@@ -85,8 +99,28 @@ class IsLibraryStaff(permissions.BasePermission):
     def has_permission(self, request, view):
         if not request.user or not request.user.is_authenticated:
             return False
-        organization = resolve_request_organization(request)
-        return user_is_staff_for_org(request.user, organization)
+        organization = resolve_staff_request_organization(request)
+        return user_is_staff_for_org(request.user, organization) and staff_mfa_satisfied(
+            request, organization
+        )
+
+
+def staff_mfa_satisfied(request, organization) -> bool:
+    """True when org MFA is off, or session/token second-factor is satisfied.
+
+    DRF authenticates Bearer tokens after Django middleware, so token MFA must
+    be enforced here (and in :class:`StaffMfaMiddleware` for session HTML).
+    """
+    if organization is None or not organization.require_staff_mfa:
+        return True
+    if not user_is_staff_for_org(getattr(request, "user", None), organization):
+        return True
+    from . import mfa
+
+    if getattr(request, "auth", None) is not None:
+        scopes = getattr(request, "auth_scopes", None) or []
+        return "*" in scopes or "mfa:verified" in scopes
+    return mfa.session_mfa_ok(request, organization=organization)
 
 
 class HasStaffPermission(permissions.BasePermission):
@@ -100,11 +134,13 @@ class HasStaffPermission(permissions.BasePermission):
     def has_permission(self, request, view):
         if not request.user or not request.user.is_authenticated:
             return False
-        organization = resolve_request_organization(request)
+        organization = resolve_staff_request_organization(request)
         required = getattr(view, "required_staff_permission", None)
         if required is None:
-            return user_is_staff_for_org(request.user, organization)
-        return user_has_staff_permission(request.user, organization, required)
+            allowed = user_is_staff_for_org(request.user, organization)
+        else:
+            allowed = user_has_staff_permission(request.user, organization, required)
+        return allowed and staff_mfa_satisfied(request, organization)
 
 
 class TokenHasScope(permissions.BasePermission):
