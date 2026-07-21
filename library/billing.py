@@ -1,5 +1,5 @@
 """Subscription billing + tenant provisioning.
-
+ 
 The payment gateway is abstracted so the app runs fully without a real
 processor. A ``SimulatedGateway`` models a complete lifecycle — hosted
 checkout, cards on file, charges, proration, dunning and auto-renewal —
@@ -20,7 +20,7 @@ import secrets
 from datetime import timedelta
 
 from django.conf import settings
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import F
 from django.utils import timezone
 from django.utils.text import slugify
@@ -30,6 +30,7 @@ from .models import (
     CheckoutSession,
     CheckoutStatus,
     FeePolicy,
+    GatewayEvent,
     Invoice,
     InvoiceLineItem,
     InvoiceStatus,
@@ -54,12 +55,21 @@ GRACE_DAYS = 7
 MAX_DUNNING = 3
 
 # Gateway event type -> subscription status transition.
+# customer.subscription.updated is handled specially from the Stripe object status.
 GATEWAY_STATUS_MAP = {
     "invoice.paid": SubscriptionStatus.ACTIVE,
     "invoice.payment_succeeded": SubscriptionStatus.ACTIVE,
-    "customer.subscription.updated": SubscriptionStatus.ACTIVE,
     "invoice.payment_failed": SubscriptionStatus.PAST_DUE,
     "customer.subscription.deleted": SubscriptionStatus.CANCELED,
+}
+
+_STRIPE_STATUS_MAP = {
+    "trialing": SubscriptionStatus.TRIALING,
+    "active": SubscriptionStatus.ACTIVE,
+    "past_due": SubscriptionStatus.PAST_DUE,
+    "canceled": SubscriptionStatus.CANCELED,
+    "unpaid": SubscriptionStatus.PAST_DUE,
+    "incomplete_expired": SubscriptionStatus.CANCELED,
 }
 
 
@@ -78,8 +88,8 @@ class SimulatedGateway:
     def create_subscription(self, organization, plan) -> str:
         return f"sub_sim_{organization.pk}_{plan.slug}"
 
-    def create_checkout_session(self, organization, plan, token) -> str:
-        return f"cs_sim_{token[:16]}"
+    def create_checkout_session(self, organization, plan, token) -> dict[str, str]:
+        return {"id": f"cs_sim_{token[:16]}", "url": ""}
 
     def attach_payment_method(self, organization, last4) -> str:
         return f"pm_sim_{organization.pk}_{last4}"
@@ -87,14 +97,26 @@ class SimulatedGateway:
     def cancel(self, subscription) -> None:
         return None
 
-    def charge(self, payment_method, amount_cents: int) -> bool:
-        """Return True if the charge succeeds. Zero-amount always succeeds."""
+    def charge(
+        self,
+        payment_method,
+        amount_cents: int,
+        *,
+        idempotency_key: str = "",
+        customer_id: str = "",
+    ) -> str | None:
+        """Return a simulated charge id, or ``None`` when the charge declines."""
         if amount_cents <= 0:
-            return True
+            return "ch_zero"
         if payment_method is None:
-            return False
+            return None
         # The 4000-0000-0000-0000 test card (last4 "0000") always declines.
-        return payment_method.last4 != "0000"
+        if payment_method.last4 == "0000":
+            return None
+        return f"ch_sim_{payment_method.last4}_{amount_cents}"
+
+    def refund(self, charge_id: str, amount_cents: int) -> str:
+        return f"re_sim_{charge_id}_{amount_cents}"
 
 
 # Kept for backwards compatibility; behaves like SimulatedGateway with no card.
@@ -106,15 +128,24 @@ def get_gateway():
     """Return the configured payment gateway (Stripe when available, else simulated)."""
     if getattr(settings, "STRIPE_SECRET_KEY", ""):
         try:  # pragma: no cover - only when Stripe is configured
-            import stripe
+            import stripe  # noqa: F401
 
             from .billing_stripe import StripeGateway
 
-            stripe.api_key = settings.STRIPE_SECRET_KEY
             return StripeGateway()
-        except ImportError:
-            logger.warning("STRIPE_SECRET_KEY set but stripe SDK/gateway unavailable; using simulated.")
+        except ImportError as exc:
+            raise BillingError(
+                "STRIPE_SECRET_KEY is set but the Stripe SDK/gateway is unavailable. "
+                "Install stripe or clear STRIPE_SECRET_KEY."
+            ) from exc
     return SimulatedGateway()
+
+
+def assert_live_gateway_for_paid(gateway=None) -> None:
+    """Prevent SaaS deployments from accepting paid simulated charges."""
+    gateway = gateway or get_gateway()
+    if gateway.name == "simulated" and getattr(settings, "SAAS_MODE", False):
+        raise BillingError("Online billing requires Stripe when SAAS_MODE is enabled.")
 
 
 def default_plan() -> Plan | None:
@@ -137,33 +168,106 @@ def _usage(organization) -> dict:
 # --------------------------------------------------------------------------- #
 # Payment methods
 # --------------------------------------------------------------------------- #
-def default_payment_method(organization) -> PaymentMethod | None:
+def default_payment_method(organization, purpose: str = "saas") -> PaymentMethod | None:
     return (
-        PaymentMethod.objects.filter(organization=organization, is_default=True).first()
-        or PaymentMethod.objects.filter(organization=organization).first()
+        PaymentMethod.objects.filter(
+            organization=organization, purpose=purpose, is_default=True
+        ).first()
+        or PaymentMethod.objects.filter(organization=organization, purpose=purpose).first()
     )
 
 
 def add_payment_method(
-    *, organization, brand="visa", last4="4242", exp_month=12, exp_year=2030, make_default=True,
+    *,
+    organization,
+    brand="visa",
+    last4="4242",
+    exp_month=12,
+    exp_year=2030,
+    make_default=True,
     actor=None,
+    gateway_ref: str = "",
+    purpose: str = "saas",
 ) -> PaymentMethod:
-    """Store a simulated card on file. Never persists a real PAN — brand + last4 only."""
+    """Store a card on file. Never persists a real PAN — brand + last4 only.
+
+    Under Stripe, callers must pass a real ``gateway_ref`` (``pm_…`` from
+    Checkout/SetupIntent). Simulated gateway invents a local ref from last4.
+    """
+    if purpose not in {"saas", "fines"}:
+        raise BillingError("Payment method purpose must be 'saas' or 'fines'.")
     last4 = str(last4)[-4:].rjust(4, "0")
+    gateway = get_gateway()
+    if gateway.name == "stripe":
+        ref = (gateway_ref or "").strip()
+        if not ref.startswith("pm_") or ref.startswith("pm_stripe_"):
+            raise BillingError(
+                "Stripe payment methods require a real payment_method id from Checkout/SetupIntent."
+            )
+    else:
+        ref = gateway_ref or gateway.attach_payment_method(organization, last4)
     with transaction.atomic():
         if make_default:
-            PaymentMethod.objects.filter(organization=organization).update(is_default=False)
+            PaymentMethod.objects.filter(organization=organization, purpose=purpose).update(
+                is_default=False
+            )
         method = PaymentMethod.objects.create(
             organization=organization,
-            gateway_ref=get_gateway().attach_payment_method(organization, last4),
+            gateway_ref=ref,
             brand=brand,
             last4=last4,
             exp_month=exp_month,
             exp_year=exp_year,
-            is_default=make_default or not PaymentMethod.objects.filter(organization=organization).exists(),
+            purpose=purpose,
+            is_default=make_default
+            or not PaymentMethod.objects.filter(
+                organization=organization, purpose=purpose
+            ).exists(),
         )
     audit_action(action="billing.payment_method.add", entity=method, actor=actor, source="billing")
     return method
+
+
+def charge_online_amount(
+    *,
+    organization,
+    amount_cents: int,
+    payment_method=None,
+    payment_method_id=None,
+    idempotency_key: str = "",
+) -> tuple[bool, str]:
+    """Charge a stored fines payment method for patron fees/installments."""
+    gateway = get_gateway()
+    if amount_cents > 0:
+        assert_live_gateway_for_paid(gateway)
+    methods = PaymentMethod.objects.filter(organization=organization, purpose="fines")
+    if payment_method_id is not None:
+        try:
+            payment_method = methods.get(pk=payment_method_id)
+        except (PaymentMethod.DoesNotExist, TypeError, ValueError) as exc:
+            raise BillingError("Payment method does not belong to this organization.") from exc
+    elif payment_method is not None:
+        if not isinstance(payment_method, PaymentMethod) or not methods.filter(
+            pk=payment_method.pk
+        ).exists():
+            raise BillingError("Payment method does not belong to this organization.")
+        payment_method = methods.get(pk=payment_method.pk)
+    else:
+        payment_method = default_payment_method(organization, purpose="fines")
+    if payment_method is None:
+        raise BillingError(
+            "Patron fines require a fines payment method (or Checkout); "
+            "an organization SaaS payment method cannot be used."
+        )
+    subscription = get_subscription(organization)
+    customer_id = subscription.external_customer_id if subscription else ""
+    charge_id = gateway.charge(
+        payment_method,
+        amount_cents,
+        idempotency_key=idempotency_key,
+        customer_id=customer_id,
+    )
+    return charge_id is not None, charge_id or ""
 
 
 # --------------------------------------------------------------------------- #
@@ -220,22 +324,44 @@ def start_trial(*, organization, plan, trial_days: int = 30, actor=None) -> Subs
     return subscription
 
 
+@transaction.atomic
 def subscribe(*, organization, plan, actor=None) -> Subscription:
     """Activate a subscription, charging the card on file (if any) for the period."""
     gateway = get_gateway()
+    organization = Organization.objects.select_for_update().get(pk=organization.pk)
     now = timezone.now()
     period_end = now + timedelta(days=PERIOD_DAYS)
-    existing = get_subscription(organization)
+    existing = (
+        Subscription.objects.select_for_update()
+        .select_related("plan")
+        .filter(organization=organization)
+        .first()
+    )
     method = default_payment_method(organization)
     # Apply any banked account credit (e.g. from a prior downgrade) first.
     available_credit = existing.credit_cents if existing else 0
     credit_used = min(available_credit, plan.price_cents)
     net = plan.price_cents - credit_used
-    # With no card on file the plan is comped/activated (e.g. admin action);
-    # with a card, a paid plan must clear before it goes active.
-    charged = True
-    if net > 0 and method is not None:
-        charged = gateway.charge(method, net)
+    if net > 0:
+        assert_live_gateway_for_paid(gateway)
+    if net > 0 and method is None:
+        raise BillingError("A card is required to subscribe to a paid plan.")
+    customer_id = (
+        (existing.external_customer_id if existing else "") or gateway.create_customer(organization)
+    )
+    charge_id = (
+        "ch_zero"
+        if net == 0
+        else gateway.charge(
+            method,
+            net,
+            idempotency_key=(
+                f"subscribe:{organization.pk}:{plan.slug}:{period_end.date().isoformat()}"
+            ),
+            customer_id=customer_id,
+        )
+    )
+    charged = charge_id is not None
     consumed_credit = credit_used if (net == 0 or charged) else 0
     status = SubscriptionStatus.ACTIVE if charged else SubscriptionStatus.PAST_DUE
     subscription, _ = Subscription.objects.update_or_create(
@@ -247,12 +373,14 @@ def subscribe(*, organization, plan, actor=None) -> Subscription:
             "dunning_attempts": 0 if charged else 1,
             "grace_until": None if charged else now + timedelta(days=GRACE_DAYS),
             "credit_cents": available_credit - consumed_credit,
-            "external_customer_id": (
-                existing.external_customer_id if existing else gateway.create_customer(organization)
+            "external_customer_id": customer_id,
+            "external_subscription_id": (
+                existing.external_subscription_id if existing else ""
             ),
-            "external_subscription_id": gateway.create_subscription(organization, plan),
         },
     )
+    subscription.external_subscription_id = gateway.create_subscription(organization, plan)
+    subscription.save(update_fields=["external_subscription_id", "updated_at"])
     paid = net == 0 or (method is not None and charged)
     lines = [(f"{plan.name} subscription", plan.price_cents)]
     if consumed_credit:
@@ -289,20 +417,40 @@ def subscribe(*, organization, plan, actor=None) -> Subscription:
 def create_checkout(*, organization, plan, actor=None) -> CheckoutSession:
     """Open a simulated hosted-checkout session for a plan."""
     token = secrets.token_urlsafe(24)
-    session = CheckoutSession.objects.create(organization=organization, plan=plan, token=token)
-    get_gateway().create_checkout_session(organization, plan, token)
+    gateway_session = get_gateway().create_checkout_session(organization, plan, token)
+    session = CheckoutSession.objects.create(
+        organization=organization,
+        plan=plan,
+        token=token,
+        external_session_id=gateway_session["id"],
+        hosted_url=gateway_session["url"],
+    )
     audit_action(action="billing.checkout.create", entity=session, actor=actor, source="billing")
     return session
 
 
 @transaction.atomic
 def complete_checkout(
-    *, session: CheckoutSession, brand="visa", last4="4242", exp_month=12, exp_year=2030, actor=None,
+    *,
+    session: CheckoutSession,
+    brand="visa",
+    last4="4242",
+    exp_month=12,
+    exp_year=2030,
+    actor=None,
+    gateway_ref: str = "",
 ) -> Subscription:
     """Complete checkout: store the card, charge it, activate — or raise on decline."""
     session = CheckoutSession.objects.select_for_update().get(pk=session.pk)
     if session.status != CheckoutStatus.OPEN:
         raise BillingError("This checkout session has already been used.")
+    gateway = get_gateway()
+    if session.plan.price_cents > 0:
+        assert_live_gateway_for_paid(gateway)
+    if gateway.name == "stripe" and (
+        not gateway_ref.startswith("pm_") or gateway_ref.startswith("pm_stripe_")
+    ):
+        raise BillingError("Stripe checkout completion requires a real payment_method id.")
     add_payment_method(
         organization=session.organization,
         brand=brand,
@@ -311,6 +459,8 @@ def complete_checkout(
         exp_year=exp_year,
         make_default=True,
         actor=actor,
+        gateway_ref=gateway_ref,
+        purpose="saas",
     )
     # subscribe() is the single charge point (it charges the default card). A
     # decline leaves the subscription PAST_DUE; raising rolls the whole atomic
@@ -364,24 +514,62 @@ def _open_renewal_invoice(subscription: Subscription) -> Invoice | None:
     )
 
 
+@transaction.atomic
 def charge_subscription(*, subscription: Subscription, actor=None) -> bool:
     """Attempt to renew a period: charge the card on file and issue an invoice."""
-    plan = subscription.plan
+    subscription = Subscription.objects.select_for_update().select_related(
+        "plan", "organization"
+    ).get(pk=subscription.pk)
+    if subscription.status == SubscriptionStatus.CANCELED:
+        return False
     now = timezone.now()
+    if (
+        subscription.status in {SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIALING}
+        and subscription.current_period_end
+        and subscription.current_period_end > now
+    ):
+        return True
+    plan = subscription.plan
     period_end = now + timedelta(days=PERIOD_DAYS)
     net, credit_used = _apply_credit(subscription, plan.price_cents)
-    method = default_payment_method(subscription.organization)
-    charged = net == 0 or (method is not None and get_gateway().charge(method, net))
+    method = default_payment_method(subscription.organization, purpose="saas")
+    period_key = (
+        subscription.current_period_end.isoformat()
+        if subscription.current_period_end
+        else "none"
+    )
+    gateway = get_gateway()
+    if net > 0:
+        assert_live_gateway_for_paid(gateway)
+    charge_id = (
+        "ch_zero"
+        if net == 0
+        else (
+            gateway.charge(
+                method,
+                net,
+                idempotency_key=f"renew:{subscription.pk}:{period_key}",
+                customer_id=subscription.external_customer_id,
+            )
+            if method is not None
+            else None
+        )
+    )
+    charged = charge_id is not None
 
     # Reuse the outstanding renewal invoice on a dunning retry instead of piling
     # up a fresh unpaid invoice every cycle.
     invoice = _open_renewal_invoice(subscription)
     if invoice is None:
+        lines = [(f"{plan.name} renewal", plan.price_cents)]
+        if credit_used:
+            lines.append(("Account credit applied", -credit_used))
         _issue_invoice(
             subscription,
-            amount_cents=plan.price_cents,
+            amount_cents=net,
             description=f"{plan.name} renewal",
             paid=charged,
+            lines=lines,
             period_start=now,
             period_end=period_end,
         )
@@ -469,8 +657,18 @@ def _prorate(subscription: Subscription, old_plan: Plan, new_plan: Plan, now) ->
     return {"net_cents": charge - credit, "lines": lines}
 
 
+@transaction.atomic
 def change_plan(*, subscription: Subscription, new_plan: Plan, actor=None) -> Subscription:
     """Switch plans (with proration), refusing a downgrade current usage won't fit."""
+    subscription = Subscription.objects.select_for_update().select_related(
+        "organization", "plan"
+    ).get(pk=subscription.pk)
+    if subscription.status not in {
+        SubscriptionStatus.ACTIVE,
+        SubscriptionStatus.TRIALING,
+        SubscriptionStatus.PAST_DUE,
+    }:
+        raise BillingError("Canceled subscriptions must use subscribe() to reactivate.")
     usage = _usage(subscription.organization)
     for resource, attr in (
         ("branches", "max_branches"), ("patrons", "max_patrons"), ("copies", "max_copies")
@@ -495,8 +693,27 @@ def change_plan(*, subscription: Subscription, new_plan: Plan, actor=None) -> Su
     # granted — never deliver the new tier on an unpaid invoice.
     paid = True
     if net > 0:
-        method = default_payment_method(subscription.organization)
-        paid = method is not None and get_gateway().charge(method, net)
+        gateway = get_gateway()
+        assert_live_gateway_for_paid(gateway)
+        method = default_payment_method(subscription.organization, purpose="saas")
+        # Stripe subscription schedules are app-driven; do not synchronize items.
+        period = (
+            subscription.current_period_end.date().isoformat()
+            if subscription.current_period_end
+            else "none"
+        )
+        paid = (
+            method is not None
+            and gateway.charge(
+                method,
+                net,
+                idempotency_key=(
+                    f"plan_change:{subscription.pk}:{old_plan.slug}:{new_plan.slug}:{period}"
+                ),
+                customer_id=subscription.external_customer_id,
+            )
+            is not None
+        )
         if not paid:
             raise BillingError("Your card was declined for the plan change.")
     subscription.plan = new_plan
@@ -530,7 +747,11 @@ def change_plan(*, subscription: Subscription, new_plan: Plan, actor=None) -> Su
     return subscription
 
 
+@transaction.atomic
 def cancel_subscription(*, subscription: Subscription, actor=None) -> Subscription:
+    subscription = Subscription.objects.select_for_update().get(pk=subscription.pk)
+    if subscription.status == SubscriptionStatus.CANCELED:
+        return subscription
     get_gateway().cancel(subscription)
     subscription.status = SubscriptionStatus.CANCELED
     subscription.save(update_fields=["status", "updated_at"])
@@ -569,32 +790,101 @@ def billing_overview(organization) -> dict:
     }
 
 
+def _claim_gateway_event(event_id: str, event_type: str) -> bool:
+    """Claim a gateway event before mutation; false means it was already claimed."""
+    if not event_id:
+        return True
+    try:
+        _, created = GatewayEvent.objects.get_or_create(
+            event_id=event_id, defaults={"event_type": event_type}
+        )
+    except IntegrityError:
+        return False
+    return created
+
+
+@transaction.atomic
 def handle_gateway_event(event: dict) -> bool:
-    """Apply a Stripe-style webhook event to the matching subscription. Idempotent."""
-    event_type = event.get("type")
-    new_status = GATEWAY_STATUS_MAP.get(event_type)
+    """Claim and apply a Stripe-style webhook event exactly once."""
+    event_type = event.get("type") or ""
+    obj = (event.get("data") or {}).get("object") or {}
+    event_id = event.get("id") or ""
+    if not event_id and not settings.DEBUG:
+        return False
+    if event_id and not _claim_gateway_event(event_id, event_type):
+        return False
+    if event_type == "checkout.session.completed":
+        token = obj.get("client_reference_id") or ""
+        session = CheckoutSession.objects.select_for_update().filter(
+            token=token, status=CheckoutStatus.OPEN
+        ).first()
+        if session is None:
+            return False
+        gateway = get_gateway()
+        payment_method = (
+            gateway.payment_method_from_checkout_session(obj)
+            if gateway.name == "stripe"
+            else obj.get("payment_method") or ""
+        )
+        if not isinstance(payment_method, str) or not payment_method.startswith("pm_"):
+            return False
+        try:
+            complete_checkout(session=session, gateway_ref=payment_method)
+        except BillingError:
+            if event_id:
+                GatewayEvent.objects.filter(event_id=event_id).delete()
+            logger.warning("Stripe checkout event could not complete session %s", token)
+            return False
+        return True
+    if event_type == "customer.subscription.updated":
+        new_status = _STRIPE_STATUS_MAP.get((obj.get("status") or "").lower())
+    else:
+        new_status = GATEWAY_STATUS_MAP.get(event_type)
     if new_status is None:
         return False
-    obj = (event.get("data") or {}).get("object") or {}
     sub_id = obj.get("subscription") or obj.get("id") or ""
     customer_id = obj.get("customer") or ""
-    subscription = None
-    if sub_id:
-        subscription = Subscription.objects.filter(external_subscription_id=sub_id).first()
-    if subscription is None and customer_id:
-        subscription = Subscription.objects.filter(external_customer_id=customer_id).first()
-    if subscription is None:
-        logger.warning("Billing webhook %s matched no subscription", event_type)
+    if sub_id.startswith("sub_app_") and event_type.startswith("customer.subscription."):
+        logger.info("Ignoring Stripe-native event for app-driven subscription %s", sub_id)
         return False
-    if subscription.status != new_status:
-        subscription.status = new_status
-        subscription.save(update_fields=["status", "updated_at"])
-        audit_action(
-            action="subscription.webhook",
-            entity=subscription,
-            after={"event": event_type, "status": new_status},
-            source="billing",
+    subscription = (
+        Subscription.objects.filter(external_subscription_id=sub_id).first() if sub_id else None
+    )
+    if subscription is None:
+        if customer_id and not sub_id:
+            logger.warning(
+                "Billing webhook %s has a customer but no subscription id; refusing mutation",
+                event_type,
+            )
+        else:
+            logger.warning("Billing webhook %s matched no subscription", event_type)
+        return False
+    fields = ["status", "updated_at"]
+    previous_status = subscription.status
+    if previous_status == SubscriptionStatus.CANCELED and new_status != SubscriptionStatus.CANCELED:
+        logger.warning(
+            "Ignoring attempted reactivation of canceled subscription %s", subscription.pk
         )
+        return False
+    if previous_status != new_status:
+        subscription.status = new_status
+    # Mirror internal dunning: past_due from the gateway opens a grace window.
+    if new_status == SubscriptionStatus.PAST_DUE:
+        now = timezone.now()
+        if previous_status != SubscriptionStatus.PAST_DUE or subscription.grace_until is None:
+            subscription.grace_until = now + timedelta(days=GRACE_DAYS)
+            fields.append("grace_until")
+    elif new_status == SubscriptionStatus.ACTIVE:
+        subscription.grace_until = None
+        subscription.dunning_attempts = 0
+        fields.extend(["grace_until", "dunning_attempts"])
+    subscription.save(update_fields=list(dict.fromkeys(fields)))
+    audit_action(
+        action="subscription.webhook",
+        entity=subscription,
+        after={"event": event_type, "status": new_status},
+        source="billing",
+    )
     return True
 
 
