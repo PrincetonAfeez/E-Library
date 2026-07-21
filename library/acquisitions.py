@@ -1,5 +1,5 @@
 """Acquisitions: vendors, funds/budgets, purchase orders, and receiving.
-
+ 
 Receiving a line spends its fund and materializes physical ``Copy`` rows (barcode
 auto-generated), respecting the tenant's plan copy limit. Budgets are enforced at
 receipt.
