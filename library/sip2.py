@@ -1,12 +1,17 @@
-"""SIP2 (Standard Interchange Protocol) message handling for self-check kiosks.
+"""SIP2 (Standard Interchange Protocol) message handling for self-check kiosks
 
 Implements the request→response message pairs used by self-checkout machines and
 RFID gates, mapping them onto the existing circulation services. The message
 parsing/formatting is pure and testable; a thin socket server (management command)
 feeds raw lines to :func:`handle_message`.
+
+Checkout/checkin require a successful 93 Login for the organization (CN/CO must
+match ``Organization.sip2_login_user`` / ``sip2_login_password``).
 """
 
 from __future__ import annotations
+
+import hmac
 
 from django.utils import timezone
 
@@ -33,8 +38,13 @@ def _timestamp(now=None) -> str:
     return (now or timezone.now()).strftime("%Y%m%d    %H%M%S")
 
 
-def handle_message(raw: str, *, organization, actor=None) -> str:
-    """Dispatch a SIP2 request message and return the response message string."""
+def handle_message(raw: str, *, organization, actor=None, session=None) -> str:
+    """Dispatch a SIP2 request message and return the response message string.
+
+    ``session`` is a mutable dict kept for the TCP connection lifetime; login
+    success sets ``session["authenticated"] = True``.
+    """
+    session = session if session is not None else {}
     raw = raw.strip()
     if len(raw) < 2:
         return "96"  # Request SC Resend
@@ -42,21 +52,49 @@ def handle_message(raw: str, *, organization, actor=None) -> str:
     handler = _HANDLERS.get(code)
     if handler is None:
         return "96"
-    return handler(raw, organization, actor)
+    return handler(raw, organization, actor, session)
 
 
-def _login(raw, organization, actor) -> str:
-    # 93 Login -> 94 Login Response (ok=1 when well-formed).
-    return "941"
+def _login(raw, organization, actor, session) -> str:
+    # 93 Login -> 94 Login Response (ok=1 only when CN/CO match org credentials).
+    from .crypto import decrypt_value
+
+    fields = _fields(raw[2:] if len(raw) > 2 else "")
+    user = fields.get("CN", "")
+    password = fields.get("CO", "")
+    expected_user = (organization.sip2_login_user or "").strip()
+    stored = (organization.sip2_login_password or "").strip()
+    if not expected_user or not stored:
+        session["authenticated"] = False
+        return "940"
+    try:
+        expected_pass = decrypt_value(stored)
+    except ValueError:
+        session["authenticated"] = False
+        return "940"
+    try:
+        ok = hmac.compare_digest(user, expected_user) and hmac.compare_digest(
+            password, expected_pass
+        )
+    except ValueError:
+        ok = False
+    session["authenticated"] = bool(ok)
+    return "941" if ok else "940"
 
 
-def _sc_status(raw, organization, actor) -> str:
+def _require_auth(session) -> bool:
+    return bool(session.get("authenticated"))
+
+
+def _sc_status(raw, organization, actor, session) -> str:
     # 99 SC Status -> 98 ACS Status. Online=Y, checkin/checkout allowed.
     return f"98YYYYNN00000{_timestamp()}2.00AOAM|"
 
 
-def _patron_status(raw, organization, actor) -> str:
+def _patron_status(raw, organization, actor, session) -> str:
     # 23 Patron Status Request -> 24 Patron Status Response.
+    if not _require_auth(session):
+        return f"24{'Y' * 14}000{_timestamp()}AO|AA|BLN|AFLogin required.|"
     fields = _fields(raw)
     card = fields.get("AA", "")
     patron = PatronProfile.objects.filter(
@@ -74,8 +112,10 @@ def _patron_status(raw, organization, actor) -> str:
     )
 
 
-def _checkout(raw, organization, actor) -> str:
+def _checkout(raw, organization, actor, session) -> str:
     # 11 Checkout -> 12 Checkout Response.
+    if not _require_auth(session):
+        return _checkout_fail("", "", "Login required.")
     fields = _fields(raw)
     card = fields.get("AA", "")
     barcode = fields.get("AB", "")
@@ -103,8 +143,10 @@ def _checkout_fail(card, barcode, message) -> str:
     return f"120NUN{_timestamp()}AO|AA{card}|AB{barcode}|AF{message}|"
 
 
-def _checkin(raw, organization, actor) -> str:
+def _checkin(raw, organization, actor, session) -> str:
     # 09 Checkin -> 10 Checkin Response.
+    if not _require_auth(session):
+        return f"100NUN{_timestamp()}AO|AB|AFLogin required.|"
     fields = _fields(raw)
     barcode = fields.get("AB", "")
     copy = Copy.objects.filter(organization=organization, barcode=barcode).first()
