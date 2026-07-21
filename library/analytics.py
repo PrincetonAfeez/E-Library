@@ -1,5 +1,5 @@
 """Collection-development analytics and BI export (Increment 16).
-
+ 
 Turns raw circulation into the numbers that drive purchasing and reporting:
 collection turnover, holds-to-copies pressure (→ purchase suggestions), a
 circulation time series, and a compact BI export.
