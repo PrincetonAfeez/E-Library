@@ -1,4 +1,5 @@
 """Django admin registrations for library models."""
+
 from django.contrib import admin
 
 from . import models
