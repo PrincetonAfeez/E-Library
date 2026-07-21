@@ -1,5 +1,5 @@
 """Discovery/social features: reviews, ratings, reading lists, recommendations."""
-
+ 
 from __future__ import annotations
 
 from django.db.models import Avg, Count
