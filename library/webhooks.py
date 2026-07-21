@@ -11,11 +11,12 @@ import hashlib
 import hmac
 import json
 import logging
-import urllib.request
 from datetime import timedelta
 
+from django.db import transaction
 from django.utils import timezone
 
+from .crypto import decrypt_value
 from .models import (
     DomainEvent,
     WebhookDelivery,
@@ -50,10 +51,12 @@ def enqueue_for_outbox_event(event) -> int:
     for endpoint in WebhookEndpoint.objects.filter(organization=organization, active=True):
         if not endpoint.matches(event.event_type):
             continue
-        WebhookDelivery.objects.create(
-            endpoint=endpoint, event_type=event.event_type, payload=body
+        _, delivery_created = WebhookDelivery.objects.get_or_create(
+            endpoint=endpoint,
+            outbox_event_id=event.pk,
+            defaults={"event_type": event.event_type, "payload": body},
         )
-        created += 1
+        created += int(delivery_created)
     return created
 
 
@@ -65,15 +68,12 @@ def _default_post(url: str, body: bytes, headers: dict) -> int:
     from urllib.parse import urlparse
 
     from . import circuit
-    from .net import validate_outbound_url
+    from .net import safe_urlopen
 
-    # Tenant-configured URL: reject non-http(s) schemes (file:/gopher:/…) first.
-    validate_outbound_url(url)
-    request = urllib.request.Request(url, data=body, headers=headers, method="POST")
     # Trip a per-host breaker so a persistently failing endpoint is skipped fast
     # instead of retried on every sweep (CircuitOpen is handled like any failure).
     with circuit.guard(urlparse(url).netloc):
-        with urllib.request.urlopen(request, timeout=8) as response:  # nosec B310 - scheme validated  # noqa: S310
+        with safe_urlopen(url, data=body, headers=headers, method="POST", timeout=8) as response:
             return response.status
 
 
@@ -81,17 +81,26 @@ def deliver_webhooks(*, batch_size: int = 100, post=None, now=None) -> int:
     post = post or _default_post
     now = now or timezone.now()
     delivered = 0
-    due = list(
-        WebhookDelivery.objects.select_related("endpoint")
-        .filter(status=WebhookDeliveryStatus.PENDING, next_attempt_at__lte=now)
-        .order_by("next_attempt_at", "id")[:batch_size]
-    )
+    WebhookDelivery.objects.filter(
+        status=WebhookDeliveryStatus.SENDING, updated_at__lt=now - timedelta(minutes=15)
+    ).update(status=WebhookDeliveryStatus.PENDING, next_attempt_at=now, updated_at=now)
+    with transaction.atomic():
+        due = list(
+            WebhookDelivery.objects.select_for_update(skip_locked=True)
+            .select_related("endpoint")
+            .filter(status=WebhookDeliveryStatus.PENDING, next_attempt_at__lte=now)
+            .order_by("next_attempt_at", "id")[:batch_size]
+        )
+        for delivery in due:
+            delivery.status = WebhookDeliveryStatus.SENDING
+            delivery.attempts += 1
+            delivery.save(update_fields=["status", "attempts", "updated_at"])
     for delivery in due:
         body = json.dumps(delivery.payload).encode("utf-8")
         headers = {"Content-Type": "application/json", "X-Elibrary-Event": delivery.event_type}
         if delivery.endpoint.secret:
-            headers["X-Elibrary-Signature"] = _sign(delivery.endpoint.secret, body)
-        delivery.attempts += 1
+            secret = decrypt_value(delivery.endpoint.secret)
+            headers["X-Elibrary-Signature"] = _sign(secret, body)
         try:
             code = post(delivery.endpoint.url, body, headers)
             if 200 <= code < 300:
@@ -108,6 +117,7 @@ def deliver_webhooks(*, batch_size: int = 100, post=None, now=None) -> int:
                 delivery.status = WebhookDeliveryStatus.FAILED
                 logger.error("Webhook %s dead-lettered: %s", delivery.pk, exc)
             else:
+                delivery.status = WebhookDeliveryStatus.PENDING
                 delivery.next_attempt_at = timezone.now() + timedelta(minutes=2**delivery.attempts)
         delivery.save(
             update_fields=[
