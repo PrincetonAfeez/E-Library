@@ -1,5 +1,5 @@
 """Digital/e-content lending: license-based loans, holds, expiry, and access.
-
+ 
 Parallels physical circulation but availability comes from license models
 (one-copy-one-user, metered checkouts/time, simultaneous use) rather than copies.
 Digital loans auto-expire (no physical return), free a concurrent slot, and
@@ -173,9 +173,20 @@ def _close_digital_loan(loan, *, status, actor, source):
     loan.status = status
     loan.returned_at = timezone.now()
     loan.patron_hash = stable_patron_hash(patron)
+    # Invalidate the durable bearer so leaked tokens cannot mint manifests.
+    loan.access_token = f"revoked-{secrets.token_urlsafe(24)}"
     if patron is not None and not patron.retain_loan_history:
         loan.patron = None
-    loan.save(update_fields=["status", "returned_at", "patron_hash", "patron", "updated_at"])
+    loan.save(
+        update_fields=[
+            "status",
+            "returned_at",
+            "patron_hash",
+            "patron",
+            "access_token",
+            "updated_at",
+        ]
+    )
     _assign_next_digital_hold(
         edition=loan.license.edition, organization=loan.organization, actor=actor, source=source
     )
@@ -298,18 +309,7 @@ def expire_digital_ready_holds(*, now=None) -> int:
 
 
 def access_content(*, access_token: str) -> dict:
-    """Validate a loan's access token and return a reading manifest (gated reader).
-
-    Includes the legacy ``content_url`` alongside the structured manifest so
-    existing clients keep working while new readers use the secure pipeline.
-    """
+    """Validate a loan's access token and return a secure reading manifest."""
     from . import delivery
 
-    manifest = delivery.access_manifest(access_token=access_token)
-    loan = (
-        DigitalLoan.objects.select_related("license")
-        .filter(access_token=access_token, status=DigitalLoanStatus.ACTIVE)
-        .first()
-    )
-    manifest.setdefault("content_url", loan.license.content_url if loan else "")
-    return manifest
+    return delivery.access_manifest(access_token=access_token)
