@@ -1,5 +1,5 @@
 """Events (programs) with waitlists and room reservations with conflict checks."""
-
+ 
 from __future__ import annotations
 
 from django.db import transaction
