@@ -3,9 +3,9 @@
 # reproducible deploys. Regenerate after dependency changes.
 #
 # Install: pip install -r requirements.txt
-Django==6.0.6
+Django==6.0.7
 djangorestframework==3.17.1
-drf-spectacular==0.29.0
+drf-spectacular==0.30.0
 django-environ==0.14.0
 psycopg==3.3.4
 psycopg-binary==3.3.4
@@ -22,7 +22,7 @@ django-storages[boto3]>=1.14
 sentry-sdk>=2.0
 
 # Transitive pins (resolved) for reproducibility:
-asgiref==3.11.1
+asgiref==3.12.1
 sqlparse==0.5.5
 uritemplate==4.2.0
 PyYAML==6.0.3
